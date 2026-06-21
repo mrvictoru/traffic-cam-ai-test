@@ -26,3 +26,62 @@ Run the tests with:
 ```bash
 python -m unittest discover -s tests -q
 ```
+
+## Docker Support
+
+You can run the pipeline in a Docker container on both Windows and Linux systems. The only requirement is to have Docker installed.
+
+### Using Docker Directly
+
+Build the image:
+
+```bash
+docker build -t macau-feed .
+```
+
+Run the pipeline with default options:
+
+```bash
+docker run macau-feed
+```
+
+Run with custom options:
+
+```bash
+docker run macau-feed --limit 5
+docker run macau-feed --pretty --limit 10
+```
+
+Run the tests inside the container:
+
+```bash
+docker run macau-feed python -m unittest discover -s tests -q
+```
+
+### Using Docker Compose
+
+The easiest way to run the pipeline is with Docker Compose:
+
+```bash
+docker-compose up
+```
+
+This will build the image and run the pipeline with default settings.
+
+To pass custom arguments, edit the `docker-compose.yml` file and uncomment/modify the `command` line in the `macau-feed` service, then run:
+
+```bash
+docker-compose up --build
+```
+
+To run tests with Docker Compose, edit `docker-compose.yml` to replace the command with:
+
+```yaml
+command: ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]
+```
+
+Then run:
+
+```bash
+docker-compose up --build
+```

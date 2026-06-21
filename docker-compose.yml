@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  macau-feed:
+    build: .
+    # Override the default command/args if needed
+    # Uncomment and modify to pass custom arguments:
+    # command: ["--limit", "5"]
+    # 
+    # Or run tests:
+    # command: ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]

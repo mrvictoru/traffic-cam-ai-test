@@ -1,90 +1,114 @@
 # traffic-cam-ai-test
-This repo is to test taking live traffic cam and outputting useful traffic information
 
-## Macau DSAT live feed pipeline
+A small Macau traffic camera proof-of-concept that discovers live DSAT feeds, handles DSAT reload/anti-bot pages, and captures frames from HLS streams.
 
-This repository now includes a small Python pipeline that:
+## Current repository state
 
-1. fetches the Macau DSAT realtime index page at `https://www.dsat.gov.mo/dsat/realtime.aspx`
-2. discovers camera detail pages such as `realtime_core.aspx?...&cam_id=...`
-3. fetches each detail page and extracts live `.m3u8`, `image.aspx`, or snapshot image URLs
-4. emits a JSON snapshot of the discovered feeds
+This repo now contains:
 
-Run it with:
+- `macau_dsat_feed.py` — compatibility wrapper CLI for the current package.
+- `src/trafficcam` — the new package with ingestion, capture, analysis, storage, API, and web scaffolding.
+- `tools/` — utility scripts for probing the live DSAT site and inspecting pages.
+- `tests/` — unit and integration tests for live DSAT parsing and capture functionality.
+
+## How the DSAT live feed workflow works
+
+1. The script probes `https://www.dsat.gov.mo/dsat/realtime.aspx`.
+2. It discovers camera detail pages from links and embedded URLs.
+3. It fetches each camera detail page and looks for live `.m3u8` HLS URLs, `image.aspx` snapshots, or direct image URLs.
+4. If a detail page does not immediately contain a stream URL, it checks for DSAT's reload/continue page.
+5. It automatically follows the `realtime_reload.aspx` / `realtime_core4.aspx` flow if present, so the script can resolve the actual live stream URL.
+
+## Anti-bot / reload handling
+
+DSAT sometimes requires a reload or "continue" step before exposing the real camera stream. This is the anti-bot mechanism you observed:
+
+- the initial camera link may land on `realtime_reload.aspx` instead of the final detail page,
+- the page often contains a link or a meta refresh that leads to the real `realtime_core4.aspx` page,
+- our code detects this intermediate page and follows the redirect automatically.
+
+That means the script can still get the live feed without manual clicking, while preserving the same detection and capture flow.
+
+## Getting live camera feeds
+
+### Discover feeds and show a manifest
 
 ```bash
-python macau_dsat_feed.py --pretty
+python macau_dsat_feed.py --manifest --pretty
 ```
 
-Useful options:
+This command discovers DSAT cameras, resolves detail pages, follows reload pages when needed, and prints a manifest of discovered feed URLs.
 
-- `--limit 5` to only print the first few cameras
-- `--index-url <url>` to point the pipeline at a different DSAT index page or a local fixture
-- `--manifest` to generate a camera manifest with discovered stream URLs
-- `--capture-frames --output-dir frames --frame-count 3` to capture frames from the discovered feeds
-- `--capture-loop --output-dir frames --frame-count 3 --capture-interval 5 --max-cycles 2` to run a short continuous capture loop
-
-Run the tests with:
+### Capture frames from discovered feeds
 
 ```bash
-python -m unittest discover -s tests -q
+python macau_dsat_feed.py --capture-frames --output-dir frames --frame-count 3
 ```
 
-## Docker Support
+This will:
 
-You can run the pipeline in a Docker container on both Windows and Linux systems. The only requirement is to have Docker installed.
+- discover live feeds,
+- resolve stream URLs from DSAT detail pages,
+- follow reload/continue logic when the anti-bot page is present,
+- use `ffmpeg` to capture frame images into `frames/`.
 
-### Using Docker Directly
+### Run repeated capture cycles
 
-Build the image:
+```bash
+python macau_dsat_feed.py --capture-loop --output-dir frames --frame-count 3 --capture-interval 5 --max-cycles 2
+```
+
+This runs the discovery and capture flow repeatedly with a delay between cycles.
+
+## Utility scripts
+
+The repository includes helper tools for live inspection:
+
+- `tools/probe_live.py` — probe the DSAT index and verify camera entry extraction.
+- `tools/inspect_live_page.py` — inspect the raw DSAT index HTML and locate camera URL matches.
+- `tools/inspect_detail.py` — inspect a camera detail page and extract stream-like URLs.
+
+These scripts are for exploratory testing and live website debugging, not the core capture pipeline.
+
+## Running tests
+
+From the repo root:
+
+```bash
+python -m pytest -q
+```
+
+Or inside Docker:
+
+```bash
+docker run --rm --entrypoint python macau-feed -m pytest -q
+```
+
+## Docker support
+
+### Build the image
 
 ```bash
 docker build -t macau-feed .
 ```
 
-Run the pipeline with default options:
+### Run the pipeline
 
 ```bash
 docker run macau-feed
 ```
 
-Run with custom options:
+### Run tests in Docker
 
 ```bash
-docker run macau-feed --limit 5
-docker run macau-feed --pretty --limit 10
+docker run --rm --entrypoint python macau-feed -m pytest -q
 ```
 
-Run the tests inside the container:
-
-```bash
-docker run macau-feed python -m unittest discover -s tests -q
-```
-
-### Using Docker Compose
-
-The easiest way to run the pipeline is with Docker Compose:
-
-```bash
-docker-compose up
-```
-
-This will build the image and run the pipeline with default settings.
-
-To pass custom arguments, edit the `docker-compose.yml` file and uncomment/modify the `command` line in the `macau-feed` service, then run:
+### Docker Compose
 
 ```bash
 docker-compose up --build
 ```
 
-To run tests with Docker Compose, edit `docker-compose.yml` to replace the command with:
+If you want to pass custom arguments, edit the `docker-compose.yml` service command or override the entrypoint as needed.
 
-```yaml
-command: ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]
-```
-
-Then run:
-
-```bash
-docker-compose up --build
-```

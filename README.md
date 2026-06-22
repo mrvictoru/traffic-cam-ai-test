@@ -20,6 +20,9 @@ Useful options:
 
 - `--limit 5` to only print the first few cameras
 - `--index-url <url>` to point the pipeline at a different DSAT index page or a local fixture
+- `--manifest` to generate a camera manifest with discovered stream URLs
+- `--capture-frames --output-dir frames --frame-count 3` to capture frames from the discovered feeds
+- `--capture-loop --output-dir frames --frame-count 3 --capture-interval 5 --max-cycles 2` to run a short continuous capture loop
 
 Run the tests with:
 

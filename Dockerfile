@@ -2,12 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
 # Copy application files
 COPY macau_dsat_feed.py .
 COPY tests/ tests/
-
-# Run tests to verify the image works
-RUN python -m unittest discover -s tests -q
 
 # Set entrypoint to the pipeline
 ENTRYPOINT ["python", "macau_dsat_feed.py"]

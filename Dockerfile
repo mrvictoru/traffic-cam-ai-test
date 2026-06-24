@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir pytest fastapi
 # Copy application files
 COPY macau_dsat_feed.py ./
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY pytest.ini ./pytest.ini
 

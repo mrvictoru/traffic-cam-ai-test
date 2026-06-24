@@ -1,6 +1,8 @@
 services:
   macau-feed:
     build: .
+    volumes:
+      - .:/app
     # Override the default command/args if needed
     # Uncomment and modify to pass custom arguments:
     # command: ["--limit", "5"]

@@ -241,7 +241,12 @@ def test_incident_detector_emits_flow_drop_event(tmp_path: Path):
     store = _seed_store(tmp_path, "cam1", records)
     analyzer = TrendAnalyzer(store)
 
-    incidents = analyzer.detect_incidents("cam1", z_threshold=2.0)
+    incidents = analyzer.detect_incidents(
+        "cam1",
+        z_threshold=2.0,
+        window_records=0,
+        hour_buckets=1,
+    )
 
     assert len(incidents) >= 1
     flow_drops = [i for i in incidents if i.incident_type == "flow_drop"]
@@ -275,7 +280,12 @@ def test_incident_detector_emits_density_spike_event(tmp_path: Path):
     store = _seed_store(tmp_path, "cam1", records)
     analyzer = TrendAnalyzer(store)
 
-    incidents = analyzer.detect_incidents("cam1", z_threshold=2.0)
+    incidents = analyzer.detect_incidents(
+        "cam1",
+        z_threshold=2.0,
+        window_records=0,
+        hour_buckets=1,
+    )
 
     density_spikes = [i for i in incidents if i.incident_type == "density_spike"]
     assert len(density_spikes) == 1
@@ -289,7 +299,12 @@ def test_incident_detector_emits_no_events_for_stable_history(tmp_path: Path):
     records = _seed_known_baseline(tmp_path, "cam1", 20, base_flow_total=150)
     store = _seed_store(tmp_path, "cam1", records)
     analyzer = TrendAnalyzer(store)
-    incidents = analyzer.detect_incidents("cam1", z_threshold=2.0)
+    incidents = analyzer.detect_incidents(
+        "cam1",
+        z_threshold=2.0,
+        window_records=0,
+        hour_buckets=1,
+    )
     # No flow drops and no density spikes expected
     flow_drops = [i for i in incidents if i.incident_type == "flow_drop"]
     density_spikes = [i for i in incidents if i.incident_type == "density_spike"]
@@ -307,7 +322,13 @@ def test_incident_detector_persists_to_storage(tmp_path: Path):
     store = _seed_store(tmp_path, "cam1", records)
     analyzer = TrendAnalyzer(store)
 
-    analyzer.detect_incidents("cam1", z_threshold=2.0, persist=True)
+    analyzer.detect_incidents(
+        "cam1",
+        z_threshold=2.0,
+        persist=True,
+        window_records=0,
+        hour_buckets=1,
+    )
 
     incident_paths = list(store.list_records(prefix="incidents/cam1"))
     assert len(incident_paths) >= 1
@@ -323,7 +344,13 @@ def test_incident_detector_requires_minimum_history(tmp_path: Path):
     ]
     store = _seed_store(tmp_path, "cam1", records)
     analyzer = TrendAnalyzer(store)
-    incidents = analyzer.detect_incidents("cam1", z_threshold=2.0, min_history=5)
+    incidents = analyzer.detect_incidents(
+        "cam1",
+        z_threshold=2.0,
+        min_history=5,
+        window_records=0,
+        hour_buckets=1,
+    )
     assert incidents == []
 
 

@@ -12,20 +12,26 @@ to `incidents/{camera_id}/{ts}.json`.
 
 from __future__ import annotations
 
-import json
+import logging
 import math
 import statistics
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .baseline import baseline_values, zscore_with_window
+from .coalesce import coalesce_incidents
 from ..models import (
+    CoalescedIncident,
     CongestionEvent,
     FlowSplit,
     IncidentEvent,
 )
 from ..storage.base import StorageBackend
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +120,49 @@ def _parse_timestamp(value: str) -> datetime:
 def _load_records(store: StorageBackend, camera_id: str) -> list[dict]:
     """Load and parse all analysis records for a camera, sorted by time."""
     prefix = f"analyses/{camera_id}/"
+    index_path = f"analyses/{camera_id}/index.jsonl"
+    try:
+        index_entries = store.load_jsonl(index_path)
+    except FileNotFoundError:
+        index_entries = None
+
+    if index_entries is not None:
+        records = []
+        for entry in index_entries:
+            density = str(entry.get("density", "unknown"))
+            flow_total = int(entry.get("flow_total", 0))
+            flow_nb = int(entry.get("flow_nb", 0))
+            flow_sb = int(entry.get("flow_sb", 0))
+            records.append(
+                {
+                    "camera_id": camera_id,
+                    "captured_at": entry["captured_at"],
+                    "label": density,
+                    "details": {
+                        "density": density,
+                        "flow_rate_vph": {
+                            "northbound": flow_nb,
+                            "southbound": flow_sb,
+                            "total": flow_total,
+                        },
+                    },
+                    "_path": entry.get("record_path", ""),
+                }
+            )
+        records.sort(key=lambda record: record["captured_at"])
+        return records
+
+    LOGGER.warning("Falling back to full scan for %s because %s is missing", camera_id, index_path)
     records: list[dict] = []
     for path in store.list_records(prefix=prefix):
+        if path.endswith("index.jsonl"):
+            continue
         payload = store.load_json(path)
         if not isinstance(payload, dict):
             continue
         if "captured_at" not in payload:
             continue
+        payload["_path"] = path
         records.append(payload)
     records.sort(key=lambda r: r["captured_at"])
     return records
@@ -215,36 +257,14 @@ _DENSITY_ORDINAL = {
 }
 
 
-def _zscore(value: float, baseline: Sequence[float]) -> float:
-    """Compute the signed z-score of `value` against `baseline`.
-
-    - Returns 0.0 if the baseline has fewer than 2 entries (not enough history).
-    - When the baseline has zero variance and the value differs from the mean,
-      returns -inf for a drop and +inf for a spike so that any deviation from
-      a stable baseline is flagged as anomalous (and with the right sign for
-      "flow_drop" vs "density_spike" detection).
-    """
-    if len(baseline) < 2:
-        return 0.0
-    mean = statistics.fmean(baseline)
-    try:
-        stdev = statistics.stdev(baseline)
-    except statistics.StatisticsError:
-        stdev = 0.0
-    if stdev == 0:
-        if value < mean:
-            return float("-inf")
-        if value > mean:
-            return float("inf")
-        return 0.0
-    return (value - mean) / stdev
-
-
 def detect_incidents(
     records: Sequence[dict],
     camera_id: str,
     z_threshold: float = 2.0,
     min_history: int = 5,
+    window_records: int = 288,
+    hour_buckets: int = 24,
+    severity_cap: float = 10.0,
 ) -> list[IncidentEvent]:
     """Detect anomalous records using a z-score against prior history.
 
@@ -276,11 +296,30 @@ def detect_incidents(
         ts = _parse_timestamp(rec["captured_at"])
 
         # Build baselines from records strictly before i.
-        flow_baseline = flow_series[:i]
-        density_baseline = density_series[:i]
+        flow_baseline = baseline_values(
+            records,
+            i,
+            window_records=window_records,
+            hour_buckets=hour_buckets,
+            series_extractor=_flow_total_from_record,
+        )
+        density_baseline = baseline_values(
+            records,
+            i,
+            window_records=window_records,
+            hour_buckets=hour_buckets,
+            series_extractor=lambda record: _DENSITY_ORDINAL.get(
+                (_density_from_record(record) or "").lower(),
+                0,
+            ),
+        )
 
         # Flow drop: sharply lower than baseline.
-        z_flow = _zscore(flow_series[i], flow_baseline)
+        z_flow = zscore_with_window(
+            flow_series[i],
+            flow_baseline,
+            severity_cap=severity_cap,
+        )
         if z_flow <= -z_threshold:
             incidents.append(
                 IncidentEvent(
@@ -301,7 +340,11 @@ def detect_incidents(
             )
 
         # Density spike: sharply higher than baseline.
-        z_density = _zscore(density_series[i], density_baseline)
+        z_density = zscore_with_window(
+            density_series[i],
+            density_baseline,
+            severity_cap=severity_cap,
+        )
         if z_density >= z_threshold:
             incidents.append(
                 IncidentEvent(
@@ -331,8 +374,18 @@ def detect_incidents(
 class TrendAnalyzer:
     """High-level temporal analysis over a camera's persisted records."""
 
-    def __init__(self, store: StorageBackend) -> None:
+    def __init__(
+        self,
+        store: StorageBackend,
+        *,
+        window_records: int = 288,
+        hour_buckets: int = 24,
+        cooldown_minutes: float = 10.0,
+    ) -> None:
         self.store = store
+        self.window_records = window_records
+        self.hour_buckets = hour_buckets
+        self.cooldown_minutes = cooldown_minutes
 
     # -- query helpers --
 
@@ -358,6 +411,10 @@ class TrendAnalyzer:
         z_threshold: float = 2.0,
         min_history: int = 5,
         persist: bool = False,
+        window_records: int | None = None,
+        hour_buckets: int | None = None,
+        coalesce: bool = False,
+        cooldown_minutes: float | None = None,
     ) -> list[IncidentEvent]:
         records = self.load_records(camera_id)
         incidents = detect_incidents(
@@ -365,7 +422,14 @@ class TrendAnalyzer:
             camera_id,
             z_threshold=z_threshold,
             min_history=min_history,
+            window_records=self.window_records if window_records is None else window_records,
+            hour_buckets=self.hour_buckets if hour_buckets is None else hour_buckets,
         )
+        if coalesce:
+            incidents = coalesce_incidents(
+                incidents,
+                cooldown_minutes=self.cooldown_minutes if cooldown_minutes is None else cooldown_minutes,
+            )
         if persist:
             for ev in incidents:
                 self._persist_incident(ev)

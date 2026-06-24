@@ -110,3 +110,11 @@ class IncidentEvent:
     timestamp: datetime
     severity: float
     details: dict = field(default_factory=dict)
+
+
+@dataclass
+class CoalescedIncident(IncidentEvent):
+    """Incident record augmented with cooldown-based grouping metadata."""
+
+    coalesced_count: int = 1
+    coalesced_timestamps: list[str] = field(default_factory=list)

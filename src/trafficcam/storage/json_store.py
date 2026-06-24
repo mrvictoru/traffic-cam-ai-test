@@ -27,8 +27,40 @@ class JsonStore(StorageBackend):
         target = self.root_dir / Path(path)
         return json.loads(target.read_text(encoding="utf-8"))
 
+    def append_jsonl(self, path: str | Path, payload: Any) -> None:
+        """Append one JSON object per line to a JSONL file."""
+        target = self.root_dir / Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+
+    def load_jsonl(self, path: str | Path) -> list[Any]:
+        """Load all objects from a newline-delimited JSON file."""
+        target = self.root_dir / Path(path)
+        if not target.exists():
+            raise FileNotFoundError(target)
+        with target.open("r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def save_jsonl(self, path: str | Path, payloads: list[Any]) -> None:
+        """Write a complete newline-delimited JSON file."""
+        target = self.root_dir / Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8") as handle:
+            for payload in payloads:
+                handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+
     def list_records(self, prefix: str = "") -> Iterable[str]:
         """List JSON record paths under the storage root."""
         if not self.root_dir.exists():
             return []
-        return [str(path.relative_to(self.root_dir)) for path in self.root_dir.rglob("*.json") if prefix in str(path)]
+        prefix_value = prefix.replace("\\", "/")
+        results = []
+        for path in self.root_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(self.root_dir).as_posix()
+            if prefix_value and not relative.startswith(prefix_value):
+                continue
+            results.append(relative)
+        return sorted(results)

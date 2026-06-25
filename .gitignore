@@ -1,3 +1,22 @@
 # Generated runtime artifacts
 output/
 data/
+
+# Local configuration and temporary files
+*.env
+*.local
+config*.yml
+config*.yaml
+settings*.json
+local_settings.py
+*.db
+*.sqlite
+*.sqlite3
+
+# Python and editor caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+.DS_Store

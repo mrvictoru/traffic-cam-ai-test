@@ -21,12 +21,16 @@ class Settings:
     # Vision model
     vision_model_name: str = os.getenv("VISION_MODEL", "google/owlvit-base-patch32")
     vision_device: str = os.getenv("VISION_DEVICE", "cpu")
-    vision_confidence_threshold: float = float(os.getenv("VISION_CONFIDENCE", "0.25"))
+    vision_confidence_threshold: float = float(os.getenv("VISION_CONFIDENCE", "0.15"))
 
-    # Vehicle classes to detect (configurable list of text queries for zero-shot model)
+    # Object classes to detect (configurable list of text queries for zero-shot model)
+    # Broader queries improve recall on varied camera angles and distances
     vehicle_queries: tuple[str, ...] = field(
         default_factory=lambda: tuple(
-            os.getenv("VEHICLE_QUERIES", "car,truck,bus,motorcycle").split(",")
+            os.getenv(
+                "VEHICLE_QUERIES",
+                "vehicle,car,truck,bus,motorcycle,person,pedestrian",
+            ).split(",")
         )
     )
 

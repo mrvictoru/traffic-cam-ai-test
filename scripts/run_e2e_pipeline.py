@@ -8,11 +8,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from trafficcam.analysis.trends import TrendAnalyzer
 from trafficcam.capture.frame_capturer import FrameCapturer
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
 from trafficcam.storage.json_store import JsonStore
 from trafficcam.vision import ZeroShotDetector, SceneClassifier, SimpleTracker
+
+LOGGER = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
 def _capture_frames(
@@ -66,6 +71,14 @@ def _analyze_burst(
     for idx, frame_path in enumerate(frame_paths):
         detection = detector.analyze(frame_path)
         tracks = tracker.update(detection.get("detections", []))
+        LOGGER.info(
+            "Frame %d: %d detections (density=%s, confidence=%.3f, tracks=%d)",
+            idx,
+            detection.get("vehicle_count", 0),
+            detection.get("label", "unknown"),
+            detection.get("confidence", 0.0),
+            len(tracks),
+        )
         per_frame_results.append(
             {
                 "frame_idx": idx,

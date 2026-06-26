@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +11,7 @@ import logging
 
 from trafficcam.analysis.trends import TrendAnalyzer
 from trafficcam.capture.frame_capturer import FrameCapturer
+from trafficcam.config import settings
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
 from trafficcam.storage.json_store import JsonStore
 from trafficcam.vision import ZeroShotDetector, SceneClassifier, SimpleTracker
@@ -19,45 +19,10 @@ from trafficcam.vision import ZeroShotDetector, SceneClassifier, SimpleTracker
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-
-def _capture_frames(
-    camera: dict[str, Any],
-    camera_output_dir: Path,
-    frame_count: int,
-) -> dict[str, Any]:
-    """Capture frames from a camera stream using ffmpeg."""
-    stream_urls = camera.get("stream_urls") or []
-    stream_url = next(
-        (url for url in stream_urls if str(url).lower().endswith(".m3u8")), None
-    )
-    if not stream_url:
-        return {
-            "cam_id": camera.get("cam_id", "unknown"),
-            "stream_url": None,
-            "returncode": None,
-            "frame_paths": [],
-        }
-
-    camera_output_dir.mkdir(parents=True, exist_ok=True)
-    frame_pattern = str(camera_output_dir / "frame_%03d.jpg")
-    command = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", stream_url, "-frames:v", str(frame_count), frame_pattern,
-    ]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=180)
-    frame_paths = sorted(camera_output_dir.glob("frame_*.jpg"))
-    return {
-        "cam_id": camera.get("cam_id", "unknown"),
-        "stream_url": stream_url,
-        "returncode": completed.returncode,
-        "frame_paths": [str(path) for path in frame_paths],
-    }
-
-
 def _analyze_burst(
     frame_paths: list[str],
     camera_id: str,
-    stream_url: str | None,
+    capture_result: dict[str, Any],
 ) -> dict[str, Any]:
     """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
     detector = ZeroShotDetector()
@@ -126,7 +91,9 @@ def _analyze_burst(
             "per_frame": per_frame_results,
             "capture_result": {
                 "cam_id": camera_id,
-                "stream_url": stream_url,
+                "stream_url": capture_result.get("stream_url"),
+                "sample_fps": capture_result.get("sample_fps"),
+                "warmup_seconds": capture_result.get("warmup_seconds"),
             },
         },
     }
@@ -134,10 +101,12 @@ def _analyze_burst(
 
 def _run_single_cycle(
     cameras: list[dict[str, Any]],
-    output_root: Path,
     data_root: Path,
     frame_count: int,
     store: JsonStore,
+    capturer: FrameCapturer,
+    burst_fps: float | None,
+    warmup_seconds: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run one capture-and-analyze cycle. Returns capture_results and analysis_records."""
     capture_results: list[dict[str, Any]] = []
@@ -145,9 +114,13 @@ def _run_single_cycle(
 
     for camera in cameras:
         camera_id = str(camera.get("cam_id") or camera.get("camera_id") or "unknown")
-        camera_output_dir = output_root / f"cam_{camera_id}"
 
-        capture = _capture_frames(camera, camera_output_dir, frame_count)
+        capture = capturer.capture_camera(
+            camera,
+            frame_count=frame_count,
+            burst_fps=burst_fps,
+            warmup_seconds=warmup_seconds,
+        )
         capture_results.append(capture)
 
         if not capture["frame_paths"]:
@@ -156,7 +129,7 @@ def _run_single_cycle(
         analysis = _analyze_burst(
             capture["frame_paths"],
             camera_id,
-            capture.get("stream_url"),
+            capture,
         )
         analysis_records.append(analysis)
 
@@ -202,13 +175,20 @@ def run_pipeline(
         cameras = cameras[:limit]
 
     store = JsonStore(data_root)
+    capturer = FrameCapturer(output_dir=output_root)
     all_capture_results: list[dict[str, Any]] = []
     all_analysis_records: list[dict[str, Any]] = []
 
     cycle = 0
     while max_cycles is None or cycle < max_cycles:
         capture_results, analysis_records = _run_single_cycle(
-            cameras, output_root, data_root, frame_count, store
+            cameras,
+            data_root,
+            frame_count,
+            store,
+            capturer,
+            burst_fps=settings.capture_burst_fps,
+            warmup_seconds=settings.capture_warmup_seconds,
         )
         all_capture_results.extend(capture_results)
         all_analysis_records.extend(analysis_records)

@@ -51,6 +51,8 @@ class Settings:
     # Periodic capture
     capture_interval_seconds: float = float(os.getenv("CAPTURE_INTERVAL", "60.0"))
     capture_max_cycles: int | None = int(os.getenv("CAPTURE_MAX_CYCLES", "0")) or None
+    capture_burst_fps: float = float(os.getenv("CAPTURE_BURST_FPS", "1.0"))
+    capture_warmup_seconds: float = float(os.getenv("CAPTURE_WARMUP_SECONDS", "0.0"))
 
     # Trend analysis
     trend_min_history: int = int(os.getenv("TREND_MIN_HISTORY", "6"))

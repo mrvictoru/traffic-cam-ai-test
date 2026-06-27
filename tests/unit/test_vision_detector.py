@@ -48,3 +48,17 @@ class TestZeroShotDetectorFallback:
         )
         with pytest.raises(RuntimeError, match="transformers is required"):
             ZeroShotDetector()
+
+    def test_init_without_ultralytics_raises_for_yolo_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "trafficcam.vision.detector._ULTRALYTICS_AVAILABLE", False
+        )
+        with pytest.raises(RuntimeError, match="ultralytics is required"):
+            ZeroShotDetector(backend="yolo")
+
+    def test_invalid_backend_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported vision backend"):
+            ZeroShotDetector(backend="unknown")

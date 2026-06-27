@@ -15,6 +15,7 @@ from trafficcam.config import settings
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
 from trafficcam.storage.json_store import JsonStore
 from trafficcam.vision import ZeroShotDetector, SceneClassifier, SimpleTracker
+from trafficcam.vision.roi import filter_detections_to_roi, image_size, load_camera_rois
 
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -23,6 +24,7 @@ def _analyze_burst(
     frame_paths: list[str],
     camera_id: str,
     capture_result: dict[str, Any],
+    roi_polygon: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
     detector = ZeroShotDetector()
@@ -35,6 +37,25 @@ def _analyze_burst(
 
     for idx, frame_path in enumerate(frame_paths):
         detection = detector.analyze(frame_path)
+        if roi_polygon:
+            width, height = image_size(frame_path)
+            filtered_detections = filter_detections_to_roi(
+                detection.get("detections", []),
+                roi_polygon,
+                width,
+                height,
+            )
+            detection["detections"] = filtered_detections
+            detection["vehicle_count"] = len(filtered_detections)
+            detection["confidence"] = round(
+                (
+                    sum(d["confidence"] for d in filtered_detections)
+                    / len(filtered_detections)
+                )
+                if filtered_detections
+                else 0.0,
+                4,
+            )
         tracks = tracker.update(detection.get("detections", []))
         LOGGER.info(
             "Frame %d: %d detections (density=%s, confidence=%.3f, tracks=%d)",
@@ -94,6 +115,7 @@ def _analyze_burst(
                 "stream_url": capture_result.get("stream_url"),
                 "sample_fps": capture_result.get("sample_fps"),
                 "warmup_seconds": capture_result.get("warmup_seconds"),
+                "roi_applied": bool(roi_polygon),
             },
         },
     }
@@ -107,6 +129,7 @@ def _run_single_cycle(
     capturer: FrameCapturer,
     burst_fps: float | None,
     warmup_seconds: float,
+    roi_registry: dict[str, list[list[float]]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run one capture-and-analyze cycle. Returns capture_results and analysis_records."""
     capture_results: list[dict[str, Any]] = []
@@ -114,6 +137,7 @@ def _run_single_cycle(
 
     for camera in cameras:
         camera_id = str(camera.get("cam_id") or camera.get("camera_id") or "unknown")
+        roi_polygon = roi_registry.get(camera_id)
 
         capture = capturer.capture_camera(
             camera,
@@ -130,6 +154,7 @@ def _run_single_cycle(
             capture["frame_paths"],
             camera_id,
             capture,
+            roi_polygon=roi_polygon,
         )
         analysis_records.append(analysis)
 
@@ -176,6 +201,11 @@ def run_pipeline(
 
     store = JsonStore(data_root)
     capturer = FrameCapturer(output_dir=output_root)
+    roi_registry = (
+        load_camera_rois(settings.roi_config_path)
+        if settings.roi_filter_enabled
+        else {}
+    )
     all_capture_results: list[dict[str, Any]] = []
     all_analysis_records: list[dict[str, Any]] = []
 
@@ -189,6 +219,7 @@ def run_pipeline(
             capturer,
             burst_fps=settings.capture_burst_fps,
             warmup_seconds=settings.capture_warmup_seconds,
+            roi_registry=roi_registry,
         )
         all_capture_results.extend(capture_results)
         all_analysis_records.extend(analysis_records)

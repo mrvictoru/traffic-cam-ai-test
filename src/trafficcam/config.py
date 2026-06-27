@@ -19,7 +19,9 @@ class Settings:
     api_port: int = int(os.getenv("API_PORT", "8000"))
 
     # Vision model
-    vision_model_name: str = os.getenv("VISION_MODEL", "google/owlvit-base-patch32")
+    vision_backend: str = os.getenv("VISION_BACKEND", "owlvit")
+    vision_model_name: str = os.getenv("VISION_MODEL", "google/owlv2-base-patch16-ensemble")
+    vision_yolo_model_name: str = os.getenv("VISION_YOLO_MODEL", "yolov8n.pt")
     vision_device: str = os.getenv("VISION_DEVICE", "cpu")
     vision_confidence_threshold: float = float(os.getenv("VISION_CONFIDENCE", "0.15"))
 
@@ -29,7 +31,15 @@ class Settings:
         default_factory=lambda: tuple(
             os.getenv(
                 "VEHICLE_QUERIES",
-                "vehicle,car,truck,bus,motorcycle,person,pedestrian",
+                "vehicle,car,truck,bus,motorcycle,van,taxi,suv",
+            ).split(",")
+        )
+    )
+    vision_vehicle_classes: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            os.getenv(
+                "VISION_VEHICLE_CLASSES",
+                "car,truck,bus,motorcycle,bicycle",
             ).split(",")
         )
     )
@@ -53,6 +63,8 @@ class Settings:
     capture_max_cycles: int | None = int(os.getenv("CAPTURE_MAX_CYCLES", "0")) or None
     capture_burst_fps: float = float(os.getenv("CAPTURE_BURST_FPS", "1.0"))
     capture_warmup_seconds: float = float(os.getenv("CAPTURE_WARMUP_SECONDS", "0.0"))
+    roi_config_path: str = os.getenv("ROI_CONFIG_PATH", "config/camera_rois.json")
+    roi_filter_enabled: bool = os.getenv("ROI_FILTER_ENABLED", "0").strip() in {"1", "true", "yes", "on"}
 
     # Trend analysis
     trend_min_history: int = int(os.getenv("TREND_MIN_HISTORY", "6"))

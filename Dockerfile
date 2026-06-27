@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && r
 RUN pip install --no-cache-dir \
     pytest fastapi \
     transformers \
+    ultralytics \
     torch torchvision \
     opencv-python-headless \
     numpy \

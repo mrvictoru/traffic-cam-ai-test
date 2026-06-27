@@ -112,6 +112,8 @@ def _analyze_burst(
             "per_frame": per_frame_results,
             "capture_result": {
                 "cam_id": camera_id,
+                "name": capture_result.get("name"),
+                "district": capture_result.get("district"),
                 "stream_url": capture_result.get("stream_url"),
                 "sample_fps": capture_result.get("sample_fps"),
                 "warmup_seconds": capture_result.get("warmup_seconds"),

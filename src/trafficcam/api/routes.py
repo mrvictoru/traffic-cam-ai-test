@@ -27,10 +27,13 @@ def list_cameras(store: Any = None) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for analysis in analyses:
         camera_id = analysis.get("camera_id") or "unknown"
+        capture_result = (analysis.get("details") or {}).get("capture_result") or {}
         existing = grouped.setdefault(
             camera_id,
             {
                 "camera_id": camera_id,
+                "name": capture_result.get("name"),
+                "district": capture_result.get("district"),
                 "latest_density": None,
                 "latest_captured_at": None,
                 "latest_label": None,
@@ -39,6 +42,10 @@ def list_cameras(store: Any = None) -> list[dict[str, Any]]:
         details = analysis.get("details", {})
         density = details.get("density") or analysis.get("label")
         captured_at = analysis.get("captured_at")
+        if not existing.get("name"):
+            existing["name"] = capture_result.get("name")
+        if not existing.get("district"):
+            existing["district"] = capture_result.get("district")
         if existing["latest_captured_at"] is None or (captured_at or "") >= (existing["latest_captured_at"] or ""):
             existing["latest_density"] = density
             existing["latest_captured_at"] = captured_at

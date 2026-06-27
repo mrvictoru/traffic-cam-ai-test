@@ -20,6 +20,10 @@ CAMERA_URL_RE = re.compile(
     r"(?P<url>(?:https?://|/)?[^\"'\s>]*realtime_(?:core(?:4)?|reload)\.aspx\?[^\"'\s>]*cam_id=(?P<cam_id>\d+)[^\"'\s>]*)",
     re.IGNORECASE,
 )
+DISTRICT_RE = re.compile(
+    r"class=\"area_button\"[^>]*>(?P<district>[^<]+)<",
+    re.IGNORECASE,
+)
 RELOAD_REDIRECT_RE = re.compile(
     r"<a[^>]+href=[\"'](?P<url>(?:https?://|/)?[^\"'\s>]*realtime_(?:core(?:4)?|reload)\.aspx\?[^\"'\s>]*cam_id=\d+)[\"'][^>]*>",
     re.IGNORECASE,
@@ -40,10 +44,11 @@ SNAPSHOT_URL_RE = re.compile(
 
 
 class CameraEntry:
-    def __init__(self, cam_id: str, detail_url: str, name: str | None = None) -> None:
+    def __init__(self, cam_id: str, detail_url: str, name: str | None = None, district: str | None = None) -> None:
         self.cam_id = cam_id
         self.detail_url = detail_url
         self.name = name
+        self.district = district
 
 
 class AnchorParser(HTMLParser):
@@ -97,7 +102,10 @@ class DSATClient:
                 name=camera.get("name"),
                 detail_url=camera["detail_url"],
                 stream_url=(camera.get("stream_urls") or [None])[0],
-                metadata={"source": "dsat"},
+                metadata={
+                    "source": "dsat",
+                    "district": camera.get("district"),
+                },
             )
             for camera in manifest["cameras"]
         ]
@@ -111,6 +119,7 @@ class DSATClient:
             camera_payload = {
                 "cam_id": camera.cam_id,
                 "name": camera.name,
+                "district": camera.district,
                 "detail_url": camera.detail_url,
                 "stream_urls": [],
             }
@@ -147,11 +156,39 @@ def _normalize_url(url: str, base_url: str) -> str:
     return urljoin(base_url, url)
 
 
+def _normalize_district(value: str) -> str:
+    """Trim and collapse whitespace in a district header."""
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
 def extract_camera_entries(html: str, base_url: str) -> list[CameraEntry]:
+    """Extract camera entries from a DSAT index page, preserving district headers.
+
+    The DSAT page groups camera rows under district headers
+    (e.g. "澳門區", "路氹區", "跨海大橋", "新城A區", "口岸").
+    Each camera is associated with the most recent district header that
+    appears in document order, and the camera's display text is captured
+    as the location name (e.g. "提督馬路與高士德大馬路交界").
+    """
+    cameras: dict[str, CameraEntry] = {}
+
+    district_by_position: list[tuple[int, str]] = [
+        (m.start(), _normalize_district(m.group("district")))
+        for m in DISTRICT_RE.finditer(html)
+    ]
+
+    def district_for_position(pos: int) -> str | None:
+        current: str | None = None
+        for district_pos, district_name in district_by_position:
+            if district_pos <= pos:
+                current = district_name
+            else:
+                break
+        return current
+
     parser = AnchorParser()
     parser.feed(html)
 
-    cameras: dict[str, CameraEntry] = {}
     for href, text in parser.anchors:
         match = CAMERA_URL_RE.search(href)
         if not match:
@@ -163,10 +200,13 @@ def extract_camera_entries(html: str, base_url: str) -> list[CameraEntry]:
                 cam_id=cam_id,
                 detail_url=_normalize_url(match.group("url"), base_url),
                 name=text or None,
+                district=district_for_position(match.start()),
             ),
         )
         if not entry.name and text:
             entry.name = text
+        if not entry.district:
+            entry.district = district_for_position(match.start())
 
     for match in CAMERA_URL_RE.finditer(html):
         cam_id = match.group("cam_id")
@@ -175,6 +215,7 @@ def extract_camera_entries(html: str, base_url: str) -> list[CameraEntry]:
             CameraEntry(
                 cam_id=cam_id,
                 detail_url=_normalize_url(match.group("url"), base_url),
+                district=district_for_position(match.start()),
             ),
         )
 

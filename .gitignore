@@ -1,6 +1,7 @@
 # Generated runtime artifacts
 output/
 data/
+tests/fixtures/
 
 # Local configuration and temporary files
 *.env

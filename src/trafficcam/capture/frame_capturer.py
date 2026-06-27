@@ -49,6 +49,8 @@ class FrameCapturer:
         if not stream_url:
             return {
                 "cam_id": camera.get("cam_id", "unknown"),
+                "name": camera.get("name"),
+                "district": camera.get("district"),
                 "stream_url": None,
                 "returncode": None,
                 "frame_paths": [],
@@ -104,6 +106,8 @@ class FrameCapturer:
         frame_paths = sorted(camera_output_dir.glob("frame_*.jpg"))
         return {
             "cam_id": camera["cam_id"],
+            "name": camera.get("name"),
+            "district": camera.get("district"),
             "stream_url": stream_url,
             "returncode": completed.returncode,
             "frame_paths": [str(path) for path in frame_paths],

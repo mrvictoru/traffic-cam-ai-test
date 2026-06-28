@@ -1,9 +1,19 @@
 services:
   macau-feed:
     build: .
+    environment:
+      MODEL_CACHE_DIR: /app/model-cache
+      HF_HOME: /app/model-cache/huggingface
+      TRANSFORMERS_CACHE: /app/model-cache/huggingface
+      ULTRALYTICS_HOME: /app/model-cache/ultralytics
+      YOLO_CONFIG_DIR: /app/model-cache/ultralytics/config
+    volumes:
+      - .:/app
+      - ./model-cache:/app/model-cache
     # Override the default command/args if needed
     # Uncomment and modify to pass custom arguments:
     # command: ["--limit", "5"]
-    # 
+    #
     # Or run tests:
     # command: ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]
+

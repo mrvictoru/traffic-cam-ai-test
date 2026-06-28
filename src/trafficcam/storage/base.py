@@ -19,5 +19,17 @@ class StorageBackend(ABC):
         """Load JSON-serializable data from disk."""
 
     @abstractmethod
+    def append_jsonl(self, path: str | Path, payload: Any) -> None:
+        """Append a JSON-serializable object as one line of JSON."""
+
+    @abstractmethod
+    def load_jsonl(self, path: str | Path) -> list[Any]:
+        """Load newline-delimited JSON objects from disk."""
+
+    @abstractmethod
+    def save_jsonl(self, path: str | Path, payloads: list[Any]) -> None:
+        """Write newline-delimited JSON objects to disk."""
+
+    @abstractmethod
     def list_records(self, prefix: str = "") -> Iterable[str]:
         """List persisted artifact paths."""

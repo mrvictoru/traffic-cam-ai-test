@@ -1,0 +1,27 @@
+# Generated runtime artifacts
+output/
+data/
+tests/fixtures/
+model-cache/
+
+# Local configuration and temporary files
+*.env
+*.local
+config*.yml
+config*.yaml
+settings*.json
+local_settings.py
+*.db
+*.sqlite
+*.sqlite3
+
+# Python and editor caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.pytest_cache/
+.vscode/
+.DS_Store

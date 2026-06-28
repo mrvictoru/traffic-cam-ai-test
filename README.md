@@ -9,7 +9,7 @@ This repo now contains:
 - `macau_dsat_feed.py` — compatibility wrapper CLI for the current package.
 - `src/trafficcam` — the new package with ingestion, capture, analysis, storage, API, and web scaffolding.
 - `tools/` — utility scripts for probing the live DSAT site and inspecting pages.
-- `tests/` — unit and integration tests for live DSAT parsing and capture functionality.
+- `tests/` — unit and integration tests for live DSAT parsing, capture, and analysis behavior.
 
 ## How the DSAT live feed workflow works
 
@@ -18,6 +18,7 @@ This repo now contains:
 3. It fetches each camera detail page and looks for live `.m3u8` HLS URLs, `image.aspx` snapshots, or direct image URLs.
 4. If a detail page does not immediately contain a stream URL, it checks for DSAT's reload/continue page.
 5. It automatically follows the `realtime_reload.aspx` / `realtime_core4.aspx` flow if present, so the script can resolve the actual live stream URL.
+6. Captured frame metadata and future analysis output are persisted in `src/trafficcam/storage`.
 
 ## Anti-bot / reload handling
 
@@ -84,6 +85,8 @@ Or inside Docker:
 docker run --rm --entrypoint python macau-feed -m pytest -q
 ```
 
+In Docker, the suite includes the new trend analysis tests for `TrendAnalyzer`, the rolling-window baseline helpers, JSONL index support, and incident coalescing.
+
 ## Docker support
 
 ### Build the image
@@ -112,3 +115,18 @@ docker-compose up --build
 
 If you want to pass custom arguments, edit the `docker-compose.yml` service command or override the entrypoint as needed.
 
+### Notes
+
+- The Docker image includes `ffmpeg`, `pytest`, and `fastapi`.
+- The default container entrypoint is `python -m trafficcam.cli`.
+- Override the entrypoint to run package tests or one-off Python commands.
+- Model downloads are cached under `model-cache/` on the host. YOLO weights are expected at `model-cache/ultralytics/weights/` and the code prefers that cache path before falling back to a repo-local file.
+
+## TODO
+
+- [x] Wire host-mounted model cache paths and prefer cached weights in code for repeated Docker test runs.
+- [ ] Validate the YOLO backend in a fresh live end-to-end Docker run and confirm current records are regenerated with the new metadata shape.
+- [x] Validate time-spaced burst capture against a live DSAT feed by confirming a 3-frame burst produces more than one distinct file hash.
+- [ ] Add camera geolocation data (lat/lon) so cameras can be placed accurately on a dashboard map.
+- [ ] Build a frontend/dashboard layer that visualizes the latest density by district, sub-district, and camera.
+- [ ] Add camera profile routing so pedestrian-dominant views can be excluded from vehicle traffic analytics.

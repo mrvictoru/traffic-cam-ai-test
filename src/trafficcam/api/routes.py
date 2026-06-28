@@ -34,6 +34,7 @@ def list_cameras(store: Any = None) -> list[dict[str, Any]]:
                 "camera_id": camera_id,
                 "name": capture_result.get("name"),
                 "district": capture_result.get("district"),
+                "sub_district": capture_result.get("sub_district"),
                 "latest_density": None,
                 "latest_captured_at": None,
                 "latest_label": None,
@@ -46,6 +47,8 @@ def list_cameras(store: Any = None) -> list[dict[str, Any]]:
             existing["name"] = capture_result.get("name")
         if not existing.get("district"):
             existing["district"] = capture_result.get("district")
+        if not existing.get("sub_district"):
+            existing["sub_district"] = capture_result.get("sub_district")
         if existing["latest_captured_at"] is None or (captured_at or "") >= (existing["latest_captured_at"] or ""):
             existing["latest_density"] = density
             existing["latest_captured_at"] = captured_at

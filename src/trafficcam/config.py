@@ -22,6 +22,22 @@ class Settings:
     vision_backend: str = os.getenv("VISION_BACKEND", "owlvit")
     vision_model_name: str = os.getenv("VISION_MODEL", "google/owlv2-base-patch16-ensemble")
     vision_yolo_model_name: str = os.getenv("VISION_YOLO_MODEL", "yolov8n.pt")
+    model_cache_dir: str = os.getenv("MODEL_CACHE_DIR", os.path.join(os.getcwd(), "model-cache"))
+    huggingface_cache_dir: str = os.getenv(
+        "HF_HOME",
+        os.path.join(os.getenv("MODEL_CACHE_DIR", os.path.join(os.getcwd(), "model-cache")), "huggingface"),
+    )
+    ultralytics_cache_dir: str = os.getenv(
+        "ULTRALYTICS_HOME",
+        os.path.join(os.getenv("MODEL_CACHE_DIR", os.path.join(os.getcwd(), "model-cache")), "ultralytics"),
+    )
+    vision_yolo_weights_dir: str = os.getenv(
+        "VISION_YOLO_WEIGHTS_DIR",
+        os.path.join(
+            os.getenv("ULTRALYTICS_HOME", os.path.join(os.getenv("MODEL_CACHE_DIR", os.path.join(os.getcwd(), "model-cache")), "ultralytics")),
+            "weights",
+        ),
+    )
     vision_device: str = os.getenv("VISION_DEVICE", "cpu")
     vision_confidence_threshold: float = float(os.getenv("VISION_CONFIDENCE", "0.15"))
 

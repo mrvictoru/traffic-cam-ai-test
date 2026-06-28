@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,3 +63,47 @@ class TestZeroShotDetectorFallback:
     def test_invalid_backend_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unsupported vision backend"):
             ZeroShotDetector(backend="unknown")
+
+    def test_resolve_yolo_model_source_prefers_cached_weight(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(
+            "trafficcam.vision.detector._ULTRALYTICS_AVAILABLE", True
+        )
+        cached_dir = tmp_path / "weights"
+        cached_dir.mkdir(parents=True, exist_ok=True)
+        cached_weight = cached_dir / "yolov8n.pt"
+        cached_weight.write_bytes(b"cached")
+
+        detector = ZeroShotDetector(backend="yolo", model_name="yolov8n.pt")
+        monkeypatch.setattr(
+            "trafficcam.vision.detector.settings",
+            SimpleNamespace(vision_yolo_weights_dir=str(cached_dir)),
+        )
+
+        assert detector._resolve_yolo_model_source() == str(cached_weight)
+    def test_resolve_yolo_model_source_prefers_cache_over_repo_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(
+            "trafficcam.vision.detector._ULTRALYTICS_AVAILABLE", True
+        )
+        cached_dir = tmp_path / "weights"
+        cached_dir.mkdir(parents=True, exist_ok=True)
+        cached_weight = cached_dir / "yolov8n.pt"
+        cached_weight.write_bytes(b"cached")
+
+        repo_weight = tmp_path / "yolov8n.pt"
+        repo_weight.write_bytes(b"repo")
+
+        detector = ZeroShotDetector(backend="yolo", model_name=str(repo_weight))
+        monkeypatch.setattr(
+            "trafficcam.vision.detector.settings",
+            SimpleNamespace(vision_yolo_weights_dir=str(cached_dir)),
+        )
+
+        assert detector._resolve_yolo_model_source() == str(cached_weight)

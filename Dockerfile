@@ -20,7 +20,11 @@ COPY tests/ ./tests/
 COPY pytest.ini ./pytest.ini
 
 ENV PYTHONPATH=/app/src
-ENV HF_HOME=/app/.cache/huggingface
+ENV MODEL_CACHE_DIR=/app/model-cache
+ENV HF_HOME=/app/model-cache/huggingface
+ENV TRANSFORMERS_CACHE=/app/model-cache/huggingface
+ENV ULTRALYTICS_HOME=/app/model-cache/ultralytics
+ENV YOLO_CONFIG_DIR=/app/model-cache/ultralytics/config
 
 # Set entrypoint to the new package CLI
 ENTRYPOINT ["python", "-m", "trafficcam.cli"]

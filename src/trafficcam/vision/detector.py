@@ -12,7 +12,7 @@ from trafficcam.config import settings
 
 LOGGER = logging.getLogger(__name__)
 
-# Lazy import — transformers is heavy and may not be installed in all envs
+# Lazy import - transformers is heavy and may not be installed in all envs
 try:
     from transformers import pipeline
 
@@ -78,19 +78,43 @@ class ZeroShotDetector:
     def _get_pipeline(self) -> Any:
         """Lazy-load the detection pipeline (cached)."""
         if self._pipeline is None:
-            LOGGER.info("Loading zero-shot detection model: %s", self.model_name)
+            LOGGER.info(
+                "Loading zero-shot detection model: %s (cache=%s)",
+                self.model_name,
+                settings.huggingface_cache_dir,
+            )
             self._pipeline = pipeline(
                 "zero-shot-object-detection",
                 model=self.model_name,
                 device=self.device,
+                model_kwargs={"cache_dir": settings.huggingface_cache_dir},
             )
         return self._pipeline
+
+    def _resolve_yolo_model_source(self) -> str:
+        """Prefer the host-mounted cache before falling back to local files or downloads."""
+        model_path = Path(self.model_name)
+        cached_candidate = Path(settings.vision_yolo_weights_dir) / model_path.name
+        if cached_candidate.is_file():
+            LOGGER.info("Using cached YOLO weights: %s", cached_candidate)
+            return str(cached_candidate)
+
+        if model_path.is_file():
+            LOGGER.info("Using local YOLO weights file: %s", model_path)
+            return str(model_path)
+
+        return self.model_name
 
     def _get_yolo_model(self) -> Any:
         """Lazy-load the YOLO model (cached)."""
         if self._yolo_model is None:
-            LOGGER.info("Loading YOLO detection model: %s", self.model_name)
-            self._yolo_model = YOLO(self.model_name)
+            model_source = self._resolve_yolo_model_source()
+            LOGGER.info(
+                "Loading YOLO detection model: %s (cache=%s)",
+                model_source,
+                settings.vision_yolo_weights_dir,
+            )
+            self._yolo_model = YOLO(model_source)
         return self._yolo_model
 
     @staticmethod
@@ -204,3 +228,4 @@ class ZeroShotDetector:
     def analyze_burst(self, frame_paths: list[str]) -> list[dict[str, Any]]:
         """Analyze a burst of frames and return per-frame results."""
         return [self.analyze(path) for path in frame_paths]
+

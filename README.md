@@ -120,4 +120,13 @@ If you want to pass custom arguments, edit the `docker-compose.yml` service comm
 - The Docker image includes `ffmpeg`, `pytest`, and `fastapi`.
 - The default container entrypoint is `python -m trafficcam.cli`.
 - Override the entrypoint to run package tests or one-off Python commands.
+- Model downloads are cached under `model-cache/` on the host. YOLO weights are expected at `model-cache/ultralytics/weights/` and the code prefers that cache path before falling back to a repo-local file.
 
+## TODO
+
+- [x] Wire host-mounted model cache paths and prefer cached weights in code for repeated Docker test runs.
+- [ ] Validate the YOLO backend in a fresh live end-to-end Docker run and confirm current records are regenerated with the new metadata shape.
+- [x] Validate time-spaced burst capture against a live DSAT feed by confirming a 3-frame burst produces more than one distinct file hash.
+- [ ] Add camera geolocation data (lat/lon) so cameras can be placed accurately on a dashboard map.
+- [ ] Build a frontend/dashboard layer that visualizes the latest density by district, sub-district, and camera.
+- [ ] Add camera profile routing so pedestrian-dominant views can be excluded from vehicle traffic analytics.

@@ -2,6 +2,7 @@
 output/
 data/
 tests/fixtures/
+model-cache/
 
 # Local configuration and temporary files
 *.env
@@ -18,6 +19,9 @@ local_settings.py
 __pycache__/
 **/__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.pyc
 .pytest_cache/
 .vscode/
 .DS_Store

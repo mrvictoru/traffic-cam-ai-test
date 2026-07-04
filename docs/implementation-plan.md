@@ -54,11 +54,15 @@ traffic-cam-ai-test/
 │       │   ├── __init__.py
 │       │   ├── traffic_detector.py
 │       │   ├── scene_classifier.py
+│       │   ├── baseline.py
+│       │   ├── coalesce.py
+│       │   ├── trends.py
 │       │   └── metrics.py
 │       ├── storage/
 │       │   ├── __init__.py
 │       │   ├── base.py
 │       │   ├── json_store.py
+│       │   ├── index.py
 │       │   └── database.py
 │       ├── api/
 │       │   ├── __init__.py
@@ -129,7 +133,10 @@ Tasks:
 - classify traffic density at a high level,
 - optionally detect weather or lighting conditions,
 - produce structured analysis records,
-- keep the analysis logic modular so the model can be upgraded later.
+- keep the analysis logic modular so the model can be upgraded later,
+- add post-hoc trend analysis over persisted records,
+- detect incidents from flow drops and density spikes using rolling baselines,
+- coalesce sustained incidents into representative alerts.
 
 ### Phase 5 — Storage and API
 
@@ -208,6 +215,15 @@ Tasks:
 - [src/trafficcam/analysis/scene_classifier.py](../src/trafficcam/analysis/scene_classifier.py)
   - classify scene context such as day/night, rain, fog, or low visibility.
 
+- [src/trafficcam/analysis/baseline.py](../src/trafficcam/analysis/baseline.py)
+  - compute rolling, hour-bucketed baselines for incident detection.
+
+- [src/trafficcam/analysis/coalesce.py](../src/trafficcam/analysis/coalesce.py)
+  - group sustained anomalies into single coalesced incident alerts.
+
+- [src/trafficcam/analysis/trends.py](../src/trafficcam/analysis/trends.py)
+  - detect congestion runs, incident anomalies, and directional flow splits over persisted history.
+
 - [src/trafficcam/analysis/metrics.py](../src/trafficcam/analysis/metrics.py)
   - calculate simple summary statistics from multiple frames over time.
 
@@ -218,10 +234,15 @@ Tasks:
 
 - [src/trafficcam/storage/base.py](../src/trafficcam/storage/base.py)
   - define the abstract repository interface for storing manifests, captures, and analysis results.
+  - define JSONL append/load/save behavior for index files.
 
 - [src/trafficcam/storage/json_store.py](../src/trafficcam/storage/json_store.py)
   - provide a simple file-based implementation for the first version,
-  - store JSON snapshots of cameras, captures, and analysis data in a local data directory.
+  - store JSON snapshots of cameras, captures, and analysis data in a local data directory,
+  - support JSONL index append and load operations.
+
+- [src/trafficcam/storage/index.py](../src/trafficcam/storage/index.py)
+  - maintain compact per-camera analysis indices for fast record loading.
 
 - [src/trafficcam/storage/database.py](../src/trafficcam/storage/database.py)
   - optionally add SQLAlchemy or SQLite support later for richer querying.
@@ -258,6 +279,20 @@ Tests should cover both unit-level behavior and real-world behavior.
   - verify that manifest generation produces the expected JSON structure.
 
 - [tests/unit/test_frame_capturer.py](../tests/unit/test_frame_capturer.py)
+  - verify frame capture output, timing, and metadata persistence.
+
+- [tests/unit/test_trends.py](../tests/unit/test_trends.py)
+  - verify congestion detection, incident detection, and persistence of incident alerts.
+
+- [tests/unit/test_baseline.py](../tests/unit/test_baseline.py)
+  - verify rolling-window and hour-bucket baseline behavior.
+
+- [tests/unit/test_json_store_index.py](../tests/unit/test_json_store_index.py)
+  - verify JSONL index append/load behavior and prefix-safe record listing.
+
+- [tests/unit/test_coalesce.py](../tests/unit/test_coalesce.py)
+  - verify cooldown-based incident grouping.
+
   - verify frame capture logic, output directory handling, and capture metadata.
 
 - [tests/unit/test_analysis.py](../tests/unit/test_analysis.py)

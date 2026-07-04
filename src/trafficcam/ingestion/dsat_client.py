@@ -20,6 +20,26 @@ CAMERA_URL_RE = re.compile(
     r"(?P<url>(?:https?://|/)?[^\"'\s>]*realtime_(?:core(?:4)?|reload)\.aspx\?[^\"'\s>]*cam_id=(?P<cam_id>\d+)[^\"'\s>]*)",
     re.IGNORECASE,
 )
+DISTRICT_RE = re.compile(
+    r"class=\"area_button\"[^>]*>(?P<district>[^<]+)<",
+    re.IGNORECASE,
+)
+# Top-level district buttons map to sub-district groups via onclick show_sub('s_N').
+AREA_BUTTON_RE = re.compile(
+    r"id=\"area\d+\"[^>]*onclick=\"show\(\d+\);show_sub\('(?P<subid>s_\d+)'\)\"[^>]*>(?P<district>[^<]+)<",
+    re.IGNORECASE,
+)
+# Sub-district section headers carry the neighborhood name and wrap camera rows.
+SUB_DISTRICT_RE = re.compile(
+    r"id=\"sub_tab_(?P<subid>s_\d+)\"[^>]*>\s*<div><img[^>]*>&nbsp;(?P<subname>[^<]+)</div>",
+    re.IGNORECASE,
+)
+# Top-level district tab wrappers (macau_tab, cotai_tab, bridge_tab, a_tab, border_tab).
+# Button order maps 1:1 to these tabs in document order.
+DISTRICT_TAB_RE = re.compile(
+    r"<div[^>]*id=\"(?P<tabid>macau_tab|cotai_tab|bridge_tab|a_tab|border_tab)\"[^>]*>",
+    re.IGNORECASE,
+)
 RELOAD_REDIRECT_RE = re.compile(
     r"<a[^>]+href=[\"'](?P<url>(?:https?://|/)?[^\"'\s>]*realtime_(?:core(?:4)?|reload)\.aspx\?[^\"'\s>]*cam_id=\d+)[\"'][^>]*>",
     re.IGNORECASE,
@@ -40,10 +60,19 @@ SNAPSHOT_URL_RE = re.compile(
 
 
 class CameraEntry:
-    def __init__(self, cam_id: str, detail_url: str, name: str | None = None) -> None:
+    def __init__(
+        self,
+        cam_id: str,
+        detail_url: str,
+        name: str | None = None,
+        district: str | None = None,
+        sub_district: str | None = None,
+    ) -> None:
         self.cam_id = cam_id
         self.detail_url = detail_url
         self.name = name
+        self.district = district
+        self.sub_district = sub_district
 
 
 class AnchorParser(HTMLParser):
@@ -97,7 +126,11 @@ class DSATClient:
                 name=camera.get("name"),
                 detail_url=camera["detail_url"],
                 stream_url=(camera.get("stream_urls") or [None])[0],
-                metadata={"source": "dsat"},
+                metadata={
+                    "source": "dsat",
+                    "district": camera.get("district"),
+                    "sub_district": camera.get("sub_district"),
+                },
             )
             for camera in manifest["cameras"]
         ]
@@ -111,6 +144,8 @@ class DSATClient:
             camera_payload = {
                 "cam_id": camera.cam_id,
                 "name": camera.name,
+                "district": camera.district,
+                "sub_district": camera.sub_district,
                 "detail_url": camera.detail_url,
                 "stream_urls": [],
             }
@@ -144,38 +179,120 @@ class DSATClient:
 
 
 def _normalize_url(url: str, base_url: str) -> str:
-    return urljoin(base_url, url)
+    # DSAT index pages HTML-encode ampersands in href attributes as &amp;.
+    # Unescape them so the detail URL is fetchable.
+    return urljoin(base_url, url.replace("&amp;", "&"))
+
+
+def _normalize_district(value: str) -> str:
+    """Trim and collapse whitespace in a district header."""
+    return re.sub(r"\s+", " ", value or "").strip()
 
 
 def extract_camera_entries(html: str, base_url: str) -> list[CameraEntry]:
+    """Extract camera entries from a DSAT index page, preserving location metadata.
+
+    The DSAT page groups cameras under:
+    - Top-level district buttons (e.g. "澳門區", "路氹區", "跨海大橋",
+      "新城A區", "口岸") which reference sub-district groups via
+      ``onclick="show(N);show_sub('s_X')"``.
+    - Sub-district sections (``id="sub_tab_s_N"``) that carry a neighborhood
+      name (e.g. "青洲區、筷子基區及林茂塘區") and wrap the camera rows
+      for that neighborhood.
+
+    Each camera is attributed to:
+    - ``sub_district``: the neighborhood name of the sub-district section that
+      wraps it in document order.
+    - ``district``: the top-level district whose area-button references a
+      sub-district with the same id, falling back to the area-button whose
+      sub-district id precedes the camera in document order.
+    - ``name``: the camera link text (e.g. an intersection or road name).
+    """
+    cameras: dict[str, CameraEntry] = {}
+
+    # Map each sub-district id -> (section start position, neighborhood name)
+    sub_sections: list[tuple[int, str, str]] = []
+    for m in SUB_DISTRICT_RE.finditer(html):
+        sub_sections.append((m.start(), m.group("subid"), _normalize_district(m.group("subname"))))
+
+    # Map each area-button's referenced sub-district id -> top-level district name
+    district_by_subid: dict[str, str] = {}
+    for m in AREA_BUTTON_RE.finditer(html):
+        district_by_subid[m.group("subid")] = _normalize_district(m.group("district"))
+
+    # District tab wrappers define the intervals that group sub-district sections.
+    # The 5 buttons (show(1..5)) map 1:1 to the tabs in document order:
+    # macau_tab (1=澳門區), cotai_tab (2=路氹區), bridge_tab (3=跨海大橋),
+    # a_tab (4=新城A區), border_tab (5=口岸).
+    tab_ids = ["macau_tab", "cotai_tab", "bridge_tab", "a_tab", "border_tab"]
+    tab_positions: list[tuple[int, str]] = []
+    for m in DISTRICT_TAB_RE.finditer(html):
+        tab_positions.append((m.start(), m.group("tabid")))
+
+    # Area buttons in document order give us the district names aligned to tabs.
+    area_button_districts: list[str] = [
+        _normalize_district(m.group("district")) for m in AREA_BUTTON_RE.finditer(html)
+    ]
+    tab_to_district: dict[str, str] = {}
+    for idx, tabid in enumerate(tab_ids):
+        if idx < len(area_button_districts):
+            tab_to_district[tabid] = area_button_districts[idx]
+
+    # Build intervals: each tab spans from its position to the next tab's position.
+    tab_intervals: list[tuple[int, int, str]] = []
+    for idx, (pos, tabid) in enumerate(tab_positions):
+        end = tab_positions[idx + 1][0] if idx + 1 < len(tab_positions) else len(html)
+        tab_intervals.append((pos, end, tab_to_district.get(tabid, "")))
+
+    def district_for_position(pos: int) -> str | None:
+        for start, end, name in tab_intervals:
+            if start <= pos < end:
+                return name or None
+        return None
+
+    def sub_district_for_position(pos: int) -> tuple[str | None, str | None]:
+        """Return (sub_district_name, district_name) for a camera at `pos`."""
+        current_subid: str | None = None
+        current_subname: str | None = None
+        for section_pos, subid, subname in sub_sections:
+            if section_pos <= pos:
+                current_subid = subid
+                current_subname = subname
+            else:
+                break
+        # Prefer the explicit button mapping, fall back to the tab interval.
+        district = district_by_subid.get(current_subid) if current_subid else None
+        if district is None:
+            district = district_for_position(pos)
+        return current_subname, district
+
     parser = AnchorParser()
     parser.feed(html)
 
-    cameras: dict[str, CameraEntry] = {}
+    # Build a map of cam_id -> link text from the anchor parser (which gives us
+    # the display name but not the source position).
+    cam_text_by_id: dict[str, str | None] = {}
     for href, text in parser.anchors:
         match = CAMERA_URL_RE.search(href)
         if not match:
             continue
         cam_id = match.group("cam_id")
-        entry = cameras.setdefault(
-            cam_id,
-            CameraEntry(
-                cam_id=cam_id,
-                detail_url=_normalize_url(match.group("url"), base_url),
-                name=text or None,
-            ),
-        )
-        if not entry.name and text:
-            entry.name = text
+        if cam_text_by_id.get(cam_id) is None and text:
+            cam_text_by_id[cam_id] = text
 
+    # Scan the raw HTML for camera link positions so we can attribute each
+    # camera to the sub-district section and tab interval that contains it.
     for match in CAMERA_URL_RE.finditer(html):
         cam_id = match.group("cam_id")
-        cameras.setdefault(
-            cam_id,
-            CameraEntry(
-                cam_id=cam_id,
-                detail_url=_normalize_url(match.group("url"), base_url),
-            ),
+        if cam_id in cameras:
+            continue
+        sub_name, district = sub_district_for_position(match.start())
+        cameras[cam_id] = CameraEntry(
+            cam_id=cam_id,
+            detail_url=_normalize_url(match.group("url"), base_url),
+            name=cam_text_by_id.get(cam_id),
+            district=district,
+            sub_district=sub_name,
         )
 
     return sorted(cameras.values(), key=lambda camera: int(camera.cam_id))

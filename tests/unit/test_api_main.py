@@ -1,7 +1,7 @@
 from trafficcam.api.main import app, dashboard, health
 
 
-def test_main_app_registers_dashboard_and_api_routes() -> None:
+def test_app_exposes_dashboard_health_and_cameras_endpoints() -> None:
     paths = set(app.openapi()["paths"].keys())
 
     assert "/" in paths

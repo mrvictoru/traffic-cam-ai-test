@@ -11,6 +11,10 @@ from trafficcam.storage.json_store import JsonStore
 
 router = APIRouter()
 
+_HASH_KEY_SEPARATOR = "::"
+_HASH_BYTE_MAX = 255.0
+_HASH_CENTER_OFFSET = 0.5
+_APPROXIMATE_JITTER_RANGE = 14.0
 _DISTRICT_MAP_ANCHORS: dict[str, tuple[float, float]] = {
     "澳門區": (34.0, 40.0),
     "路氹區": (63.0, 72.0),
@@ -74,8 +78,6 @@ def _extract_coordinates(analysis: dict[str, Any], capture_result: dict[str, Any
             longitude = _coerce_coordinate(payload.get("lng"))
         if longitude is None:
             longitude = _coerce_coordinate(payload.get("longitude"))
-        if longitude is None:
-            longitude = _coerce_coordinate(payload.get("long"))
         if latitude is not None and longitude is not None:
             return latitude, longitude
     return None, None
@@ -103,9 +105,11 @@ def _map_position_from_coordinates(latitude: float, longitude: float) -> dict[st
 
 def _approximate_map_position(camera_id: str, district: str | None, sub_district: str | None) -> dict[str, Any]:
     anchor_x, anchor_y = _DISTRICT_MAP_ANCHORS.get(district or "", _DISTRICT_MAP_ANCHORS["unknown"])
-    digest = hashlib.sha256(f"{district}|{sub_district}|{camera_id}".encode("utf-8")).digest()
-    x_jitter = ((digest[0] / 255.0) - 0.5) * 14.0
-    y_jitter = ((digest[1] / 255.0) - 0.5) * 14.0
+    digest = hashlib.sha256(
+        f"{district}{_HASH_KEY_SEPARATOR}{sub_district}{_HASH_KEY_SEPARATOR}{camera_id}".encode("utf-8")
+    ).digest()
+    x_jitter = ((digest[0] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE
+    y_jitter = ((digest[1] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE
     return {
         "x_percent": round(_clamp(anchor_x + x_jitter, 6.0, 94.0), 1),
         "y_percent": round(_clamp(anchor_y + y_jitter, 6.0, 94.0), 1),

@@ -20,6 +20,14 @@ def _density_color(density: str | None) -> str:
     return _DENSITY_COLORS.get((density or "unknown").lower(), _DENSITY_COLORS["unknown"])
 
 
+def _hex_to_rgba(color: str, alpha: float) -> str:
+    color = color.lstrip("#")
+    red = int(color[0:2], 16)
+    green = int(color[2:4], 16)
+    blue = int(color[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
 def _camera_title(camera: dict) -> str:
     return str(camera.get("name") or camera.get("camera_id") or "unknown")
 
@@ -49,6 +57,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
     for camera in sorted(cameras, key=lambda item: (-item.get("density_rank", 0), item["camera_id"])):
         density = str(camera.get("latest_density") or "unknown")
         color = _density_color(density)
+        color_glow = _hex_to_rgba(color, 0.25)
         position = camera.get("map_position") or {}
         title = escape(_camera_title(camera))
         camera_id = escape(str(camera.get("camera_id") or "unknown"))
@@ -61,7 +70,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
         markers.append(
             f"""
             <div class="map-marker" style="left:{position.get('x_percent', 50)}%; top:{position.get('y_percent', 50)}%; --marker-color:{color};">
-              <span class="map-marker-dot"></span>
+              <span class="map-marker-dot" style="--marker-glow:{color_glow};"></span>
               <div class="map-marker-label">
                 <strong>{title}</strong>
                 <span>{camera_id}</span>
@@ -214,7 +223,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
         border-radius: 999px;
         border: 3px solid rgba(15, 23, 42, 0.9);
         background: var(--marker-color);
-        box-shadow: 0 0 0 8px color-mix(in srgb, var(--marker-color) 25%, transparent);
+        box-shadow: 0 0 0 8px var(--marker-glow);
       }}
       .map-marker-label {{
         margin-top: 8px;

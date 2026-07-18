@@ -1,6 +1,8 @@
 services:
   macau-feed:
     build: .
+    ports:
+      - "8000:8000"
     environment:
       MODEL_CACHE_DIR: /app/model-cache
       HF_HOME: /app/model-cache/huggingface
@@ -14,6 +16,9 @@ services:
     # Uncomment and modify to pass custom arguments:
     # command: ["--limit", "5"]
     #
+    # Or run the API server:
+    # command: ["-m", "uvicorn", "trafficcam.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    #
     # Or run tests:
-    # command: ["python", "-m", "unittest", "discover", "-s", "tests", "-q"]
+    # command: ["-m", "pytest", "-q", "tests/unit"]
 

@@ -3,13 +3,53 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from trafficcam.storage.json_store import JsonStore
 
 router = APIRouter()
+
+# Optional hand-seeded camera coordinates (cam_id -> lat/lon) used to place
+# markers on the real map. Path is configurable for tests and deployments.
+_COORDS_CONFIG_PATH = Path(os.getenv("CAMERA_COORDS_PATH", "config/camera_coordinates.json"))
+
+
+def _load_camera_coordinates(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Load hand-seeded camera coordinates keyed by camera id.
+
+    Returns an empty mapping when the file is missing or invalid so the
+    dashboard can fall back to approximate placement.
+    """
+    target = path or _COORDS_CONFIG_PATH
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    cameras = payload.get("cameras")
+    if not isinstance(cameras, dict):
+        return {}
+    results: dict[str, dict[str, Any]] = {}
+    for cam_id, entry in cameras.items():
+        if not isinstance(entry, dict):
+            continue
+        lat = _coerce_coordinate(entry.get("latitude"))
+        lon = _coerce_coordinate(entry.get("longitude"))
+        if lat is None or lon is None:
+            continue
+        record: dict[str, Any] = {"latitude": lat, "longitude": lon}
+        if entry.get("name"):
+            record["name"] = entry.get("name")
+        if entry.get("bearing") is not None:
+            bearing = _coerce_coordinate(entry.get("bearing"))
+            if bearing is not None:
+                record["bearing"] = bearing
+        results[str(cam_id)] = record
+    return results
 
 # Hash inputs are normalized and separated so approximate positions remain stable
 # across reloads while changing predictably when location metadata changes.
@@ -149,7 +189,19 @@ def _build_map_position(
     sub_district: str | None,
     analysis: dict[str, Any],
     capture_result: dict[str, Any],
+    coordinates: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Resolve a camera's map position.
+
+    Priority: hand-seeded config coordinates, then coordinates embedded in the
+    analysis payloads, then a deterministic district-based approximation.
+    """
+    config_entry = (coordinates or {}).get(str(camera_id))
+    if config_entry is not None:
+        position = _map_position_from_coordinates(config_entry["latitude"], config_entry["longitude"])
+        if config_entry.get("bearing") is not None:
+            position["bearing"] = config_entry["bearing"]
+        return position
     latitude, longitude = _extract_coordinates(analysis, capture_result)
     if latitude is not None and longitude is not None:
         return _map_position_from_coordinates(latitude, longitude)
@@ -166,6 +218,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
     if store is None:
         store = JsonStore("data")
 
+    coordinates = _load_camera_coordinates()
     analyses = _load_analyses(store)
     grouped: dict[str, dict[str, Any]] = {}
     for analysis in analyses:
@@ -186,6 +239,9 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 "latest_captured_at": None,
                 "latest_label": None,
                 "latest_flow_total": None,
+                "latest_flow_split": None,
+                "latitude": None,
+                "longitude": None,
                 "density_rank": _DENSITY_PRIORITY["unknown"],
                 "map_position": None,
             },
@@ -201,6 +257,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             existing["latest_captured_at"] = captured_at
             existing["latest_label"] = analysis.get("label")
             existing["latest_flow_total"] = total_flow.get("total")
+            existing["latest_flow_split"] = total_flow if total_flow else None
             existing["density_rank"] = _DENSITY_PRIORITY.get(str(density).lower(), _DENSITY_PRIORITY["unknown"])
             existing["map_position"] = _build_map_position(
                 camera_id,
@@ -208,12 +265,104 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 existing.get("sub_district"),
                 analysis,
                 capture_result,
+                coordinates,
             )
+        if existing.get("latitude") is None and existing.get("map_position"):
+            position = existing["map_position"]
+            if position.get("latitude") is not None and position.get("longitude") is not None:
+                existing["latitude"] = position.get("latitude")
+                existing["longitude"] = position.get("longitude")
 
     return sorted(grouped.values(), key=lambda item: item["camera_id"])
+
+
+def _latest_analysis_for_camera(store: Any, camera_id: str) -> dict[str, Any] | None:
+    """Return the newest persisted analysis record for a camera, or None."""
+    analyses = [
+        record
+        for record in _load_analyses(store)
+        if str(record.get("camera_id")) == str(camera_id)
+    ]
+    if not analyses:
+        return None
+    return max(analyses, key=lambda record: record.get("captured_at") or "")
 
 
 @router.get("/cameras")
 def list_cameras(store: Any = None) -> list[dict[str, Any]]:
     """Return a lightweight summary for each camera seen in persisted analyses."""
     return build_camera_summaries(store=store)
+
+
+@router.get("/cameras/{camera_id}")
+def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
+    """Return the latest analysis detail for a single camera."""
+    if store is None:
+        store = JsonStore("data")
+
+    record = _latest_analysis_for_camera(store, camera_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Unknown camera: {camera_id}")
+
+    details = record.get("details") or {}
+    capture_result = details.get("capture_result") or {}
+    coordinates = _load_camera_coordinates()
+    map_position = _build_map_position(
+        camera_id,
+        capture_result.get("district"),
+        capture_result.get("sub_district"),
+        record,
+        capture_result,
+        coordinates,
+    )
+    return {
+        "camera_id": camera_id,
+        "captured_at": record.get("captured_at"),
+        "label": record.get("label"),
+        "density": _resolve_density(record, details),
+        "name": capture_result.get("name"),
+        "district": capture_result.get("district"),
+        "sub_district": capture_result.get("sub_district"),
+        "stream_url": capture_result.get("stream_url"),
+        "vehicle_count": details.get("vehicle_count"),
+        "mean_confidence": details.get("mean_confidence"),
+        "active_tracks": details.get("active_tracks"),
+        "scene": details.get("scene"),
+        "lighting": details.get("lighting"),
+        "visibility": details.get("visibility"),
+        "quality_flag": details.get("quality_flag"),
+        "flow_rate_vph": details.get("flow_rate_vph"),
+        "per_frame": details.get("per_frame") or [],
+        "map_position": map_position,
+    }
+
+
+@router.get("/cameras/{camera_id}/history")
+def get_camera_history(
+    camera_id: str,
+    limit: int = Query(default=12, ge=1, le=200),
+    store: Any = None,
+) -> list[dict[str, Any]]:
+    """Return recent analysis summaries for a camera, oldest to newest."""
+    if store is None:
+        store = JsonStore("data")
+
+    analyses = [
+        record
+        for record in _load_analyses(store)
+        if str(record.get("camera_id")) == str(camera_id)
+    ]
+    analyses.sort(key=lambda record: record.get("captured_at") or "")
+    history = [
+        {
+            "captured_at": record.get("captured_at"),
+            "density": _resolve_density(record, record.get("details") or {}),
+            "vehicle_count": (record.get("details") or {}).get("vehicle_count"),
+            "flow_rate_vph": (record.get("details") or {}).get("flow_rate_vph"),
+        }
+        for record in analyses
+    ]
+    # `limit` arrives as an int over HTTP, but is a Query object when the view
+    # is invoked directly (e.g. in unit tests). Resolve the concrete value.
+    limit_value = limit if isinstance(limit, int) else int(getattr(limit, "default", 12))
+    return history[-limit_value:]

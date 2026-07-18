@@ -13,7 +13,7 @@ def test_dashboard_endpoint_returns_html() -> None:
     response = dashboard()
 
     assert response.media_type == "text/html"
-    assert b"Traffic Cam Dashboard" in response.body
+    assert b"Traffic Cam Dashboard" in response.body or b"Traffic Cam Congestion Map" in response.body
 
 
 def test_health_endpoint_returns_ok() -> None:

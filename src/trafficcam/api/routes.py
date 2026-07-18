@@ -132,7 +132,7 @@ def _approximate_map_position(camera_id: str, district: str | None, sub_district
     district_value = district or ""
     sub_district_value = sub_district or ""
     digest = hashlib.sha256(
-        f"{district_value}{_HASH_KEY_SEPARATOR}{sub_district_value}{_HASH_KEY_SEPARATOR}{camera_id}".encode("utf-8")
+        _HASH_KEY_SEPARATOR.join([district_value, sub_district_value, camera_id]).encode("utf-8")
     ).digest()
     x_jitter = ((digest[0] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE
     y_jitter = ((digest[1] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE

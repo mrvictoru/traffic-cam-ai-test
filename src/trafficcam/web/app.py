@@ -16,13 +16,13 @@ _DENSITY_COLORS = {
     "light": "#22c55e",
     "unknown": "#94a3b8",
 }
+for _color in _DENSITY_COLORS.values():
+    if not _HEX_COLOR_RE.fullmatch(_color):
+        raise ValueError(f"Invalid dashboard density color: {_color}")
 
 
 def _density_color(density: str | None) -> str:
-    color = _DENSITY_COLORS.get((density or "unknown").lower(), _DENSITY_COLORS["unknown"])
-    if _HEX_COLOR_RE.fullmatch(color):
-        return color
-    return _DENSITY_COLORS["unknown"]
+    return _DENSITY_COLORS.get((density or "unknown").lower(), _DENSITY_COLORS["unknown"])
 
 
 def _hex_to_rgba(color: str, alpha: float) -> str:
@@ -51,6 +51,10 @@ def _camera_location(camera: dict) -> str:
     return formatted or "Location pending"
 
 
+def _camera_sort_key(camera: dict) -> tuple[int, str]:
+    return (-camera.get("density_rank", 0), str(camera.get("camera_id") or ""))
+
+
 def render_dashboard(store: JsonStore | None = None) -> str:
     """Render a first-pass dashboard with a map-style congestion overview."""
     if store is None:
@@ -70,7 +74,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
 
     markers = []
     cards = []
-    for camera in sorted(cameras, key=lambda item: (-item.get("density_rank", 0), item.get("camera_id") or "")):
+    for camera in sorted(cameras, key=_camera_sort_key):
         density = str(camera.get("latest_density") or "unknown")
         color = _density_color(density)
         color_glow = _hex_to_rgba(color, 0.25)

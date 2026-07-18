@@ -51,6 +51,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
         color = _density_color(density)
         position = camera.get("map_position") or {}
         title = escape(_camera_title(camera))
+        camera_id = escape(str(camera.get("camera_id") or "unknown"))
         location = escape(_camera_location(camera))
         captured_at = escape(str(camera.get("latest_captured_at") or "unknown"))
         flow_total = camera.get("latest_flow_total")
@@ -63,6 +64,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
               <span class="map-marker-dot"></span>
               <div class="map-marker-label">
                 <strong>{title}</strong>
+                <span>{camera_id}</span>
                 <span>{escape(density.title())} congestion</span>
               </div>
             </div>
@@ -75,6 +77,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
                 <h3>{title}</h3>
                 <span class="density-pill" style="--pill-color:{color};">{escape(density.title())}</span>
               </header>
+              <p>Camera ID: {camera_id}</p>
               <p>{location}</p>
               <p>{escape(flow_summary)}</p>
               <p>Captured: {captured_at}</p>

@@ -11,9 +11,13 @@ from trafficcam.storage.json_store import JsonStore
 
 router = APIRouter()
 
+# Hash inputs are normalized and separated so approximate positions remain stable
+# across reloads while changing predictably when location metadata changes.
 _HASH_KEY_SEPARATOR = "::"
+# SHA-256 digest bytes are scaled from 0..255 into a centered jitter offset.
 _HASH_BYTE_MAX = 255.0
 _HASH_CENTER_OFFSET = 0.5
+# Keep fallback markers near their district anchor while still avoiding overlap.
 _APPROXIMATE_JITTER_RANGE = 14.0
 _DISTRICT_MAP_ANCHORS: dict[str, tuple[float, float]] = {
     "澳門區": (34.0, 40.0),
@@ -77,6 +81,12 @@ def _first_coordinate(payload: dict[str, Any], *keys: str) -> float | None:
 
 
 def _extract_coordinates(analysis: dict[str, Any], capture_result: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Extract the first usable latitude/longitude pair from stored analysis payloads.
+
+    Search order favors the newest analysis record, then nested analysis details,
+    then capture metadata. Each payload accepts common coordinate aliases so the
+    dashboard can use real camera positions whenever they become available.
+    """
     for payload in _iter_coordinate_payloads(analysis, analysis.get("details"), capture_result):
         latitude = _first_coordinate(payload, "lat", "latitude")
         longitude = _first_coordinate(payload, "lon", "lng", "longitude")
@@ -90,6 +100,12 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 
 def _map_position_from_coordinates(latitude: float, longitude: float) -> dict[str, Any]:
+    """Project Macau lat/lon coordinates into dashboard percentage positions.
+
+    The bounds cover the Macau area used by this first-pass dashboard. Values are
+    normalized into 0-100 percentages and then clamped to keep markers visible
+    inside the rendered map surface.
+    """
     lat_min = _MACAU_MAP_BOUNDS["lat_min"]
     lat_max = _MACAU_MAP_BOUNDS["lat_max"]
     lon_min = _MACAU_MAP_BOUNDS["lon_min"]
@@ -106,6 +122,12 @@ def _map_position_from_coordinates(latitude: float, longitude: float) -> dict[st
 
 
 def _approximate_map_position(camera_id: str, district: str | None, sub_district: str | None) -> dict[str, Any]:
+    """Build a deterministic fallback map position when camera coordinates are missing.
+
+    Each district maps to a coarse anchor on the dashboard. A small SHA-256 based
+    jitter derived from district, sub-district, and camera id spreads markers so
+    cameras in the same area remain stable across renders without overlapping.
+    """
     anchor_x, anchor_y = _DISTRICT_MAP_ANCHORS.get(district or "", _DISTRICT_MAP_ANCHORS["unknown"])
     district_value = district or ""
     sub_district_value = sub_district or ""

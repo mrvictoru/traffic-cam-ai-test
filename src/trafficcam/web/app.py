@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from html import escape
 
 from trafficcam.api.routes import build_camera_summaries
 from trafficcam.storage.json_store import JsonStore
 
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _DENSITY_COLORS = {
     "blocked": "#dc2626",
     "heavy": "#f97316",
@@ -17,7 +19,10 @@ _DENSITY_COLORS = {
 
 
 def _density_color(density: str | None) -> str:
-    return _DENSITY_COLORS.get((density or "unknown").lower(), _DENSITY_COLORS["unknown"])
+    color = _DENSITY_COLORS.get((density or "unknown").lower(), _DENSITY_COLORS["unknown"])
+    if _HEX_COLOR_RE.fullmatch(color):
+        return color
+    return _DENSITY_COLORS["unknown"]
 
 
 def _hex_to_rgba(color: str, alpha: float) -> str:
@@ -26,6 +31,14 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
     green = int(color[2:4], 16)
     blue = int(color[4:6], 16)
     return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
+def _safe_percent(value: object, default: float = 50.0) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = default
+    return max(0.0, min(100.0, round(numeric, 1)))
 
 
 def _camera_title(camera: dict) -> str:
@@ -61,6 +74,8 @@ def render_dashboard(store: JsonStore | None = None) -> str:
         color = _density_color(density)
         color_glow = _hex_to_rgba(color, 0.25)
         position = camera.get("map_position") or {}
+        x_percent = _safe_percent(position.get("x_percent"))
+        y_percent = _safe_percent(position.get("y_percent"))
         title = escape(_camera_title(camera))
         camera_id = escape(str(camera.get("camera_id") or "unknown"))
         location = escape(_camera_location(camera))
@@ -71,7 +86,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
 
         markers.append(
             f"""
-            <div class="map-marker" style="left:{position.get('x_percent', 50)}%; top:{position.get('y_percent', 50)}%; --marker-color:{color};">
+            <div class="map-marker" style="left:{x_percent}%; top:{y_percent}%; --marker-color:{color};">
               <span class="map-marker-dot" style="--marker-glow:{color_glow};"></span>
               <div class="map-marker-label">
                 <strong>{title}</strong>

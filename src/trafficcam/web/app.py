@@ -311,7 +311,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
             {''.join(markers)}
             <div class="map-overlay">
               <div class="map-note">
-                {approximate_count} marker(s) currently use district-based approximate placement until camera coordinates are stored.
+                {approximate_count} camera marker(s) currently use district-based approximate placement until camera coordinates are stored.
               </div>
               <div class="map-legend">
                 <span class="legend-item"><span class="legend-swatch" style="background:{_DENSITY_COLORS['blocked']};"></span>Blocked</span>

@@ -156,6 +156,11 @@ def _build_map_position(
     return _approximate_map_position(camera_id, district, sub_district)
 
 
+def _resolve_density(analysis: dict[str, Any], details: dict[str, Any]) -> str:
+    """Return the best available congestion label for an analysis record."""
+    return str(details.get("density") or analysis.get("label") or "unknown")
+
+
 def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
     """Return camera summaries enriched with congestion and map-position metadata."""
     if store is None:
@@ -167,7 +172,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
         camera_id = analysis.get("camera_id") or "unknown"
         details = analysis.get("details") or {}
         capture_result = details.get("capture_result") or {}
-        density = details.get("density") or analysis.get("label") or "unknown"
+        density = _resolve_density(analysis, details)
         captured_at = analysis.get("captured_at")
         total_flow = details.get("flow_rate_vph") or {}
         existing = grouped.setdefault(
@@ -182,11 +187,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 "latest_label": None,
                 "latest_flow_total": None,
                 "density_rank": _DENSITY_PRIORITY["unknown"],
-                "map_position": _approximate_map_position(
-                    camera_id,
-                    capture_result.get("district"),
-                    capture_result.get("sub_district"),
-                ),
+                "map_position": None,
             },
         )
         if not existing.get("name"):
@@ -200,7 +201,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             existing["latest_captured_at"] = captured_at
             existing["latest_label"] = analysis.get("label")
             existing["latest_flow_total"] = total_flow.get("total")
-            existing["density_rank"] = _DENSITY_PRIORITY.get(str(density).lower(), _DENSITY_PRIORITY["unknown"])
+            existing["density_rank"] = _DENSITY_PRIORITY.get(density.lower(), _DENSITY_PRIORITY["unknown"])
             existing["map_position"] = _build_map_position(
                 camera_id,
                 existing.get("district"),

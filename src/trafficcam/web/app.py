@@ -48,7 +48,9 @@ def render_dashboard(store: JsonStore | None = None) -> str:
         return "<h1>Traffic Cam Dashboard</h1><p>No analyses available yet.</p>"
 
     total_cameras = len(cameras)
-    approximate_count = sum(1 for camera in cameras if (camera.get("map_position") or {}).get("source") != "coordinates")
+    approximate_count = sum(
+        1 for camera in cameras if (camera.get("map_position") or {}).get("source") == "approximate"
+    )
     blocked_count = sum(1 for camera in cameras if camera.get("latest_density") == "blocked")
     heavy_count = sum(1 for camera in cameras if camera.get("latest_density") == "heavy")
 

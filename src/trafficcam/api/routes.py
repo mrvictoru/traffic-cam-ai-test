@@ -68,16 +68,18 @@ def _iter_coordinate_payloads(*payloads: Any) -> list[dict[str, Any]]:
     return results
 
 
+def _first_coordinate(payload: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = _coerce_coordinate(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 def _extract_coordinates(analysis: dict[str, Any], capture_result: dict[str, Any]) -> tuple[float | None, float | None]:
     for payload in _iter_coordinate_payloads(analysis, analysis.get("details"), capture_result):
-        latitude = _coerce_coordinate(payload.get("lat"))
-        if latitude is None:
-            latitude = _coerce_coordinate(payload.get("latitude"))
-        longitude = _coerce_coordinate(payload.get("lon"))
-        if longitude is None:
-            longitude = _coerce_coordinate(payload.get("lng"))
-        if longitude is None:
-            longitude = _coerce_coordinate(payload.get("longitude"))
+        latitude = _first_coordinate(payload, "lat", "latitude")
+        longitude = _first_coordinate(payload, "lon", "lng", "longitude")
         if latitude is not None and longitude is not None:
             return latitude, longitude
     return None, None
@@ -105,8 +107,10 @@ def _map_position_from_coordinates(latitude: float, longitude: float) -> dict[st
 
 def _approximate_map_position(camera_id: str, district: str | None, sub_district: str | None) -> dict[str, Any]:
     anchor_x, anchor_y = _DISTRICT_MAP_ANCHORS.get(district or "", _DISTRICT_MAP_ANCHORS["unknown"])
+    district_value = district or ""
+    sub_district_value = sub_district or ""
     digest = hashlib.sha256(
-        f"{district}{_HASH_KEY_SEPARATOR}{sub_district}{_HASH_KEY_SEPARATOR}{camera_id}".encode("utf-8")
+        f"{district_value}{_HASH_KEY_SEPARATOR}{sub_district_value}{_HASH_KEY_SEPARATOR}{camera_id}".encode("utf-8")
     ).digest()
     x_jitter = ((digest[0] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE
     y_jitter = ((digest[1] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE

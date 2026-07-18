@@ -66,10 +66,11 @@ def render_dashboard(store: JsonStore | None = None) -> str:
     )
     blocked_count = sum(1 for camera in cameras if camera.get("latest_density") == "blocked")
     heavy_count = sum(1 for camera in cameras if camera.get("latest_density") == "heavy")
+    approximate_label = "camera marker" if approximate_count == 1 else "camera markers"
 
     markers = []
     cards = []
-    for camera in sorted(cameras, key=lambda item: (-item.get("density_rank", 0), item["camera_id"])):
+    for camera in sorted(cameras, key=lambda item: (-item.get("density_rank", 0), item.get("camera_id") or "")):
         density = str(camera.get("latest_density") or "unknown")
         color = _density_color(density)
         color_glow = _hex_to_rgba(color, 0.25)
@@ -311,7 +312,7 @@ def render_dashboard(store: JsonStore | None = None) -> str:
             {''.join(markers)}
             <div class="map-overlay">
               <div class="map-note">
-                {approximate_count} camera marker(s) currently use district-based approximate placement until camera coordinates are stored.
+                {approximate_count} {approximate_label} currently use district-based approximate placement until camera coordinates are stored.
               </div>
               <div class="map-legend">
                 <span class="legend-item"><span class="legend-swatch" style="background:{_DENSITY_COLORS['blocked']};"></span>Blocked</span>

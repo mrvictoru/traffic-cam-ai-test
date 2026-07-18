@@ -201,7 +201,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             existing["latest_captured_at"] = captured_at
             existing["latest_label"] = analysis.get("label")
             existing["latest_flow_total"] = total_flow.get("total")
-            existing["density_rank"] = _DENSITY_PRIORITY.get(density.lower(), _DENSITY_PRIORITY["unknown"])
+            existing["density_rank"] = _DENSITY_PRIORITY.get(str(density).lower(), _DENSITY_PRIORITY["unknown"])
             existing["map_position"] = _build_map_position(
                 camera_id,
                 existing.get("district"),

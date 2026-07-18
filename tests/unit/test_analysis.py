@@ -63,6 +63,11 @@ def test_api_routes_expose_camera_summaries(tmp_path: Path) -> None:
             "details": {
                 "density": "heavy",
                 "flow_rate_vph": {"northbound": 5, "southbound": 6, "total": 11},
+                "capture_result": {
+                    "name": "Rua do Campo",
+                    "district": "澳門區",
+                    "sub_district": "新口岸",
+                },
             },
         },
     )
@@ -75,6 +80,11 @@ def test_api_routes_expose_camera_summaries(tmp_path: Path) -> None:
             "details": {
                 "density": "moderate",
                 "flow_rate_vph": {"northbound": 3, "southbound": 4, "total": 7},
+                "capture_result": {
+                    "name": "Ponte Sai Van",
+                    "district": "跨海大橋",
+                    "sub_district": "西灣大橋",
+                },
             },
         },
     )
@@ -83,6 +93,8 @@ def test_api_routes_expose_camera_summaries(tmp_path: Path) -> None:
 
     assert [camera["camera_id"] for camera in cameras] == ["cam1", "cam2"]
     assert cameras[0]["latest_density"] == "heavy"
+    assert cameras[0]["latest_flow_total"] == 11
+    assert cameras[0]["map_position"]["source"] == "approximate"
     assert cameras[1]["latest_density"] == "moderate"
 
 
@@ -94,7 +106,14 @@ def test_web_dashboard_renders_camera_summary(tmp_path: Path) -> None:
             "camera_id": "cam1",
             "captured_at": "2026-06-24T08:00:00Z",
             "label": "blocked",
-            "details": {"density": "blocked"},
+            "details": {
+                "density": "blocked",
+                "capture_result": {
+                    "name": "Avenida de Almeida Ribeiro",
+                    "district": "澳門區",
+                    "sub_district": "議事亭前地",
+                },
+            },
         },
     )
 
@@ -102,3 +121,6 @@ def test_web_dashboard_renders_camera_summary(tmp_path: Path) -> None:
 
     assert "cam1" in html
     assert "blocked" in html
+    assert "Traffic Cam Congestion Map" in html
+    assert "camera-map" in html
+    assert "map-marker" in html

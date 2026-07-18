@@ -13,7 +13,16 @@ def test_api_routes_import_and_list_cameras(tmp_path: Path) -> None:
             "camera_id": "cam1",
             "captured_at": "2026-06-24T08:00:00Z",
             "label": "heavy",
-            "details": {"density": "heavy"},
+            "details": {
+                "density": "heavy",
+                "capture_result": {
+                    "name": "Outer Harbour",
+                    "district": "澳門區",
+                    "sub_district": "外港",
+                    "latitude": 22.195,
+                    "longitude": 113.558,
+                },
+            },
         },
     )
 
@@ -22,3 +31,5 @@ def test_api_routes_import_and_list_cameras(tmp_path: Path) -> None:
 
     assert [camera["camera_id"] for camera in cameras] == ["cam1"]
     assert cameras[0]["latest_density"] == "heavy"
+    assert cameras[0]["map_position"]["source"] == "coordinates"
+    assert cameras[0]["map_position"]["latitude"] == 22.195

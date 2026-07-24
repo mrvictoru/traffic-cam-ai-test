@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from trafficcam.vision.roi import filter_detections_to_roi, load_camera_rois, point_in_polygon
+from trafficcam.vision.roi import (
+    filter_detections_to_roi,
+    line_to_pixels,
+    load_camera_flow_lines,
+    load_camera_rois,
+    point_in_polygon,
+)
 
 
 def test_point_in_polygon_basic_square() -> None:
@@ -39,3 +45,21 @@ def test_load_camera_rois_reads_valid_json(tmp_path: Path) -> None:
     rois = load_camera_rois(config_path)
     assert "49" in rois
     assert "bad" not in rois
+
+
+def test_load_camera_flow_lines_reads_valid_json(tmp_path: Path) -> None:
+    config_path = tmp_path / "camera_flow_lines.json"
+    config_path.write_text(
+        '{"51": {"start": [0.0, 0.5], "end": [1.0, 0.5]}, "bad": {"start": [0.1], "end": [0.9, 0.5]}}',
+        encoding="utf-8",
+    )
+
+    lines = load_camera_flow_lines(config_path)
+    assert lines["51"] == ((0.0, 0.5), (1.0, 0.5))
+    assert "bad" not in lines
+
+
+def test_line_to_pixels_scales_normalized_points() -> None:
+    start, end = line_to_pixels(((0.1, 0.25), (0.9, 0.75)), image_width=200, image_height=100)
+    assert start == (20.0, 25.0)
+    assert end == (180.0, 75.0)

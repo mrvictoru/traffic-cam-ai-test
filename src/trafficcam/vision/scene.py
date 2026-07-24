@@ -80,6 +80,7 @@ class SceneClassifier:
             LOGGER.warning("opencv not available; scene heuristics disabled")
             return {
                 "brightness": 0.0,
+                "brightness_median": 0.0,
                 "contrast": 0.0,
                 "edge_density": 0.0,
             }
@@ -90,7 +91,9 @@ class SceneClassifier:
 
         # Brightness: mean of V channel in HSV
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        brightness = float(np.mean(hsv[:, :, 2]))
+        value_channel = hsv[:, :, 2]
+        brightness = float(np.mean(value_channel))
+        brightness_median = float(np.median(value_channel))
 
         # Contrast: standard deviation of grayscale luma
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -102,6 +105,7 @@ class SceneClassifier:
 
         return {
             "brightness": round(brightness, 2),
+            "brightness_median": round(brightness_median, 2),
             "contrast": round(contrast, 2),
             "edge_density": round(edge_density, 4),
         }
@@ -126,12 +130,14 @@ class SceneClassifier:
 
         heuristics = self._compute_heuristics(image_path)
         brightness = heuristics["brightness"]
+        brightness_median = heuristics.get("brightness_median", brightness)
         edge_density = heuristics["edge_density"]
 
-        # Lighting from brightness
-        if brightness >= self.brightness_day_min:
+        # Lighting primarily follows median brightness so a few headlights or
+        # street lamps do not flip a dark scene into "day".
+        if brightness_median >= self.brightness_day_min:
             lighting = "day"
-        elif brightness >= self.brightness_dusk_min:
+        elif brightness_median >= self.brightness_dusk_min:
             lighting = "dusk"
         else:
             lighting = "night"

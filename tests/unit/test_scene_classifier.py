@@ -87,3 +87,26 @@ class TestSceneClassifierHeuristics:
         assert result["lighting"] == "dusk"
         assert result["heuristics"]["brightness"] >= 60
         assert result["heuristics"]["brightness"] < 110
+
+    def test_classify_dark_scene_with_bright_hotspots_as_night(self, tmp_path: Path) -> None:
+        img_path = tmp_path / "night_hotspots.png"
+        img = np.full((100, 100, 3), 25, dtype=np.uint8)
+        img[20:30, 20:30] = 255
+        img[60:75, 55:70] = 230
+
+        try:
+            import cv2
+            cv2.imwrite(str(img_path), img)
+        except Exception:
+            pytest.skip("opencv not available")
+
+        clf = SceneClassifier(
+            brightness_day_min=110,
+            brightness_dusk_min=60,
+            use_zero_shot=False,
+        )
+        result = clf.classify(str(img_path))
+
+        assert result["lighting"] == "night"
+        assert result["heuristics"]["brightness"] > result["heuristics"]["brightness_median"]
+        assert result["heuristics"]["brightness_median"] < 60

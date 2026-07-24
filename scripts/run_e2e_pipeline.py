@@ -8,37 +8,203 @@ from pathlib import Path
 from typing import Any
 
 import logging
+import numpy as np
 
-from trafficcam.analysis.trends import TrendAnalyzer
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
+
+try:
+    import supervision as sv
+
+    _SUPERVISION_AVAILABLE = True
+except Exception:  # pragma: no cover
+    sv = None
+    _SUPERVISION_AVAILABLE = False
+
+from trafficcam.analysis.trends import TrendAnalyzer, compute_directional_flow_split
 from trafficcam.capture.frame_capturer import FrameCapturer
 from trafficcam.config import settings
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
+from trafficcam.models import FlowSplit
 from trafficcam.storage.json_store import JsonStore
-from trafficcam.vision import ZeroShotDetector, SceneClassifier, SimpleTracker
-from trafficcam.vision.roi import filter_detections_to_roi, image_size, load_camera_rois
+from trafficcam.vision import ZeroShotDetector, SceneClassifier, build_tracker
+from trafficcam.vision.roi import (
+    filter_detections_to_roi,
+    image_size,
+    line_to_pixels,
+    load_camera_flow_lines,
+    load_camera_rois,
+)
 
 LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+_DENSITY_LEVELS = ["light", "moderate", "heavy", "blocked"]
+
+
+def _line_counter_snapshot(line_counter: Any | None) -> dict[str, int]:
+    if line_counter is None:
+        return {"in": 0, "out": 0, "total": 0}
+    in_count = int(getattr(line_counter, "in_count", 0))
+    out_count = int(getattr(line_counter, "out_count", 0))
+    return {"in": in_count, "out": out_count, "total": in_count + out_count}
+
+
+def _build_line_counter(
+    flow_line_pixels: tuple[tuple[float, float], tuple[float, float]] | None,
+) -> Any | None:
+    if not (_SUPERVISION_AVAILABLE and flow_line_pixels):
+        return None
+    start, end = flow_line_pixels
+    return sv.LineZone(
+        start=sv.Point(x=start[0], y=start[1]),
+        end=sv.Point(x=end[0], y=end[1]),
+    )
+
+
+def _write_debug_frame(
+    frame_path: str,
+    output_path: Path,
+    tracks: dict[int, dict[str, Any]],
+    tracker_backend: str,
+    roi_polygon: list[list[float]] | None,
+    flow_line_pixels: tuple[tuple[float, float], tuple[float, float]] | None,
+    line_crossings: dict[str, int],
+) -> None:
+    if cv2 is None:
+        return
+
+    frame = cv2.imread(frame_path)
+    if frame is None:
+        return
+
+    height, width = frame.shape[:2]
+    if roi_polygon:
+        points = np.array(
+            [
+                [int(point[0] * width), int(point[1] * height)]
+                for point in roi_polygon
+            ],
+            dtype=np.int32,
+        )
+        cv2.polylines(frame, [points], isClosed=True, color=(0, 255, 255), thickness=2)
+
+    if flow_line_pixels:
+        start, end = flow_line_pixels
+        cv2.line(
+            frame,
+            (int(start[0]), int(start[1])),
+            (int(end[0]), int(end[1])),
+            (255, 255, 0),
+            2,
+        )
+
+    for track_id, track in sorted(tracks.items()):
+        box = track.get("box", {})
+        xmin = int(float(box.get("xmin", 0.0)))
+        ymin = int(float(box.get("ymin", 0.0)))
+        xmax = int(float(box.get("xmax", 0.0)))
+        ymax = int(float(box.get("ymax", 0.0)))
+        label = str(track.get("label", "vehicle"))
+        confidence = float(track.get("confidence", 0.0))
+        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 220, 0), 2)
+        cv2.putText(
+            frame,
+            f"#{track_id} {label} {confidence:.2f}",
+            (xmin, max(18, ymin - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 220, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    cv2.putText(
+        frame,
+        f"tracker={tracker_backend} in={line_crossings['in']} out={line_crossings['out']} total={line_crossings['total']}",
+        (12, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), frame)
+
+
+def _downgrade_density(label: str, steps: int = 1) -> str:
+    """Reduce congestion severity by `steps`, clamped at `light`."""
+    normalized = str(label or "unknown").lower()
+    if normalized not in _DENSITY_LEVELS:
+        return normalized
+    index = max(0, _DENSITY_LEVELS.index(normalized) - max(0, steps))
+    return _DENSITY_LEVELS[index]
+
+
+def _calibrate_density_for_scene(
+    density: str,
+    scene_info: dict[str, Any],
+    mean_confidence: float,
+) -> str:
+    """Prevent low-confidence night runs from collapsing into blanket jams.
+
+    Night scenes with poor quality and weak detector confidence are the exact
+    failure mode seen in earlier live runs. In that case, relax the congestion
+    label so a noisy detector spike does not become a system-wide blocked
+    reading.
+    """
+    lighting = str(scene_info.get("lighting") or scene_info.get("scene") or "unknown").lower()
+    quality_flag = str(scene_info.get("quality_flag") or "unknown").lower()
+    visibility = str(scene_info.get("visibility") or "unknown").lower()
+    downgrade_steps = max(1, settings.night_density_downgrade_steps)
+
+    if lighting == "night":
+        if density == "blocked" and mean_confidence < settings.night_blocked_min_confidence:
+            density = _downgrade_density(density, steps=downgrade_steps)
+        elif density == "heavy" and mean_confidence < settings.night_heavy_min_confidence:
+            density = _downgrade_density(density, steps=downgrade_steps)
+
+    if lighting == "night" and mean_confidence < 0.35:
+        return _downgrade_density(density, steps=downgrade_steps)
+    if quality_flag == "poor" and visibility == "low_visibility" and mean_confidence < 0.4:
+        return _downgrade_density(density, steps=downgrade_steps)
+    return density
 
 def _analyze_burst(
     frame_paths: list[str],
     camera_id: str,
     capture_result: dict[str, Any],
     roi_polygon: list[list[float]] | None = None,
+    flow_line: tuple[tuple[float, float], tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
     """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
     detector = ZeroShotDetector()
     scene_classifier = SceneClassifier()
-    tracker = SimpleTracker()
+    tracker = build_tracker(frame_rate=float(capture_result.get("sample_fps") or 1.0))
 
     per_frame_results: list[dict[str, Any]] = []
     all_detections: list[dict[str, Any]] = []
     scene_info: dict[str, Any] = {}
+    frame_width = 0
+    frame_height = 0
+    flow_line_pixels: tuple[tuple[float, float], tuple[float, float]] | None = None
+    flow_counter: Any | None = None
+    debug_output_dir = None
+    if settings.supervision_debug_frames_enabled and frame_paths:
+        debug_output_dir = Path(frame_paths[0]).parent / settings.supervision_debug_dirname
 
     for idx, frame_path in enumerate(frame_paths):
         detection = detector.analyze(frame_path)
-        if roi_polygon:
+        if roi_polygon or flow_line:
             width, height = image_size(frame_path)
+            frame_width, frame_height = width, height
+            if flow_line_pixels is None and flow_line:
+                flow_line_pixels = line_to_pixels(flow_line, width, height)
+                flow_counter = _build_line_counter(flow_line_pixels)
+        if roi_polygon:
             filtered_detections = filter_detections_to_roi(
                 detection.get("detections", []),
                 roi_polygon,
@@ -57,6 +223,10 @@ def _analyze_burst(
                 4,
             )
         tracks = tracker.update(detection.get("detections", []))
+        tracker_detections = getattr(tracker, "latest_detections", None)
+        if flow_counter is not None and tracker_detections is not None:
+            flow_counter.trigger(tracker_detections)
+        line_crossings = _line_counter_snapshot(flow_counter)
         LOGGER.info(
             "Frame %d: %d detections (density=%s, confidence=%.3f, tracks=%d)",
             idx,
@@ -73,8 +243,19 @@ def _analyze_burst(
                 "density": detection.get("label", "unknown"),
                 "confidence": detection.get("confidence", 0.0),
                 "active_tracks": len(tracks),
+                "line_crossings": line_crossings,
             }
         )
+        if debug_output_dir is not None:
+            _write_debug_frame(
+                frame_path,
+                debug_output_dir / f"{Path(frame_path).stem}_tracked.jpg",
+                tracks,
+                getattr(tracker, "backend_name", "simple"),
+                roi_polygon,
+                flow_line_pixels,
+                line_crossings,
+            )
         all_detections.extend(detection.get("detections", []))
 
     # Scene classification on the middle frame (most representative)
@@ -92,6 +273,18 @@ def _analyze_burst(
     for r in per_frame_results:
         density_counts[r["density"]] = density_counts.get(r["density"], 0) + 1
     dominant_density = max(density_counts, key=density_counts.get) if density_counts else "unknown"
+    dominant_density = _calibrate_density_for_scene(
+        dominant_density,
+        scene_info,
+        mean_confidence,
+    )
+    flow_split = FlowSplit()
+    if flow_line and frame_width > 0 and frame_height > 0:
+        flow_split = compute_directional_flow_split(
+            tracker.track_histories,
+            line_to_pixels(flow_line, frame_width, frame_height),
+        )
+    line_crossings = _line_counter_snapshot(flow_counter)
 
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -108,6 +301,10 @@ def _analyze_burst(
             "lighting": scene_info.get("lighting", "unknown"),
             "visibility": scene_info.get("visibility", "unknown"),
             "quality_flag": scene_info.get("quality_flag", "unknown"),
+            "raw_density": max(density_counts, key=density_counts.get) if density_counts else "unknown",
+            "flow_rate_vph": flow_split.to_dict(),
+            "line_crossings": line_crossings,
+            "tracking_backend": getattr(tracker, "backend_name", "simple"),
             "frame_count": len(frame_paths),
             "per_frame": per_frame_results,
             "capture_result": {
@@ -119,6 +316,7 @@ def _analyze_burst(
                 "sample_fps": capture_result.get("sample_fps"),
                 "warmup_seconds": capture_result.get("warmup_seconds"),
                 "roi_applied": bool(roi_polygon),
+                "debug_frames_dir": str(debug_output_dir) if debug_output_dir is not None else None,
             },
         },
     }
@@ -133,6 +331,7 @@ def _run_single_cycle(
     burst_fps: float | None,
     warmup_seconds: float,
     roi_registry: dict[str, list[list[float]]],
+    flow_line_registry: dict[str, tuple[tuple[float, float], tuple[float, float]]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run one capture-and-analyze cycle. Returns capture_results and analysis_records."""
     capture_results: list[dict[str, Any]] = []
@@ -141,6 +340,7 @@ def _run_single_cycle(
     for camera in cameras:
         camera_id = str(camera.get("cam_id") or camera.get("camera_id") or "unknown")
         roi_polygon = roi_registry.get(camera_id)
+        flow_line = flow_line_registry.get(camera_id)
 
         capture = capturer.capture_camera(
             camera,
@@ -158,6 +358,7 @@ def _run_single_cycle(
             camera_id,
             capture,
             roi_polygon=roi_polygon,
+            flow_line=flow_line,
         )
         analysis_records.append(analysis)
 
@@ -209,6 +410,7 @@ def run_pipeline(
         if settings.roi_filter_enabled
         else {}
     )
+    flow_line_registry = load_camera_flow_lines(settings.flow_line_config_path)
     all_capture_results: list[dict[str, Any]] = []
     all_analysis_records: list[dict[str, Any]] = []
 
@@ -223,11 +425,14 @@ def run_pipeline(
             burst_fps=settings.capture_burst_fps,
             warmup_seconds=settings.capture_warmup_seconds,
             roi_registry=roi_registry,
+            flow_line_registry=flow_line_registry,
         )
         all_capture_results.extend(capture_results)
         all_analysis_records.extend(analysis_records)
 
         cycle += 1
+        if max_cycles is None and interval <= 0:
+            break
         if max_cycles is not None and cycle >= max_cycles:
             break
 

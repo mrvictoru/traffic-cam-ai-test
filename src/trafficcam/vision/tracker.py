@@ -273,7 +273,13 @@ class SupervisionTracker:
         confidence = np.asarray(
             getattr(tracked, "confidence", np.zeros((len(xyxy),), dtype=np.float32))
         )
-        tracker_ids = list(getattr(tracked, "tracker_id", []) or [])
+        tracker_ids = getattr(tracked, "tracker_id", None)
+        if tracker_ids is None:
+            tracker_ids = []
+        elif not isinstance(tracker_ids, (list, tuple, np.ndarray)):
+            tracker_ids = [tracker_ids]
+        else:
+            tracker_ids = list(tracker_ids)
 
         new_tracks: dict[int, dict[str, Any]] = {}
         for idx, box_values in enumerate(xyxy):

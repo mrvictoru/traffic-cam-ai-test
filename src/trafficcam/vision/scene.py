@@ -46,7 +46,7 @@ class SceneClassifier:
         brightness_day_min: int | None = None,
         brightness_dusk_min: int | None = None,
         low_visibility_edge_max: float | None = None,
-        use_zero_shot: bool = True,
+        use_zero_shot: bool = False,
     ) -> None:
         self.brightness_day_min = (
             brightness_day_min if brightness_day_min is not None else settings.scene_brightness_day_min
@@ -62,15 +62,20 @@ class SceneClassifier:
         self.use_zero_shot = use_zero_shot and _TRANSFORMERS_AVAILABLE
         self._pipeline: Any | None = None
 
-    def _get_pipeline(self) -> Any:
+    def _get_pipeline(self) -> Any | None:
         """Lazy-load zero-shot classification pipeline."""
         if self._pipeline is None and self.use_zero_shot:
-            LOGGER.info("Loading zero-shot scene classification model")
-            self._pipeline = pipeline(
-                "zero-shot-image-classification",
-                model=settings.vision_model_name,
-                device=settings.vision_device,
-            )
+            try:
+                LOGGER.info("Loading zero-shot scene classification model")
+                self._pipeline = pipeline(
+                    "zero-shot-image-classification",
+                    model=settings.vision_model_name,
+                    device=settings.vision_device,
+                )
+            except Exception as exc:
+                LOGGER.debug("Zero-shot scene classification model load failed: %s", exc)
+                self._pipeline = None
+                self.use_zero_shot = False
         return self._pipeline
 
     @staticmethod
@@ -181,6 +186,8 @@ class SceneClassifier:
                         confidence = min(0.99, confidence + 0.1)
             except Exception as exc:
                 LOGGER.debug("Zero-shot scene classification failed: %s", exc)
+                zero_shot_labels = {}
+                self.use_zero_shot = False
 
         return {
             "image_path": image_path,

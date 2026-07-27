@@ -110,3 +110,30 @@ class TestSceneClassifierHeuristics:
         assert result["lighting"] == "night"
         assert result["heuristics"]["brightness"] > result["heuristics"]["brightness_median"]
         assert result["heuristics"]["brightness_median"] < 60
+
+    def test_classify_falls_back_to_heuristics_when_zero_shot_model_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        img_path = tmp_path / "fallback.png"
+        img = np.full((100, 100, 3), 85, dtype=np.uint8)
+        img[40:60, :] = 115
+
+        try:
+            import cv2
+            cv2.imwrite(str(img_path), img)
+        except Exception:
+            pytest.skip("opencv not available")
+
+        monkeypatch.setattr("trafficcam.vision.scene._TRANSFORMERS_AVAILABLE", True)
+
+        def _raise_pipeline(*args, **kwargs):
+            raise RuntimeError("unsupported model")
+
+        monkeypatch.setattr("trafficcam.vision.scene.pipeline", _raise_pipeline)
+
+        clf = SceneClassifier(brightness_day_min=110, brightness_dusk_min=60, use_zero_shot=True)
+        result = clf.classify(str(img_path))
+
+        assert result["lighting"] == "dusk"
+        assert "zero_shot_labels" in result
+        assert result["zero_shot_labels"] == {}

@@ -80,6 +80,7 @@ _DENSITY_PRIORITY = {
     "light": 1,
     "unknown": 0,
 }
+_OUTPUT_PREFIX = "output/"
 
 
 def _load_analyses(store: JsonStore) -> list[dict[str, Any]]:
@@ -88,6 +89,53 @@ def _load_analyses(store: JsonStore) -> list[dict[str, Any]]:
         for path in store.list_records(prefix="analyses/")
         if path.endswith(".json")
     ]
+
+
+def _normalize_output_path(path_value: Any) -> str | None:
+    if not path_value:
+        return None
+    raw_path = Path(str(path_value).replace("\\", "/"))
+    if raw_path.is_absolute():
+        try:
+            raw_path = raw_path.relative_to(Path.cwd())
+        except ValueError:
+            return None
+    normalized = raw_path.as_posix().lstrip("/")
+    if normalized == "output" or not normalized.startswith(_OUTPUT_PREFIX):
+        return None
+    return normalized
+
+
+def _output_asset_url(path_value: Any) -> str | None:
+    normalized = _normalize_output_path(path_value)
+    if normalized is None:
+        return None
+    return f"/{normalized}"
+
+
+def _debug_frame_output_path(frame_path: Any, debug_frames_dir: Any) -> str | None:
+    normalized_frame = _normalize_output_path(frame_path)
+    normalized_debug_dir = _normalize_output_path(debug_frames_dir)
+    if normalized_frame is None or normalized_debug_dir is None:
+        return None
+    candidate = Path(normalized_debug_dir) / f"{Path(normalized_frame).stem}_tracked.jpg"
+    candidate_path = Path.cwd() / candidate
+    if not candidate_path.is_file():
+        return None
+    return candidate.as_posix()
+
+
+def _enrich_per_frame(per_frame: list[dict[str, Any]], debug_frames_dir: Any) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for frame in per_frame:
+        record = dict(frame)
+        image_path = record.get("image_path")
+        debug_image_path = _debug_frame_output_path(image_path, debug_frames_dir)
+        record["image_url"] = _output_asset_url(image_path)
+        record["debug_image_url"] = _output_asset_url(debug_image_path)
+        record["display_image_url"] = record["debug_image_url"] or record["image_url"]
+        enriched.append(record)
+    return enriched
 
 
 def _coerce_coordinate(value: Any) -> float | None:
@@ -306,6 +354,9 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
 
     details = record.get("details") or {}
     capture_result = details.get("capture_result") or {}
+    debug_frames_dir = capture_result.get("debug_frames_dir")
+    per_frame = _enrich_per_frame(details.get("per_frame") or [], debug_frames_dir)
+    latest_frame = per_frame[-1] if per_frame else {}
     coordinates = _load_camera_coordinates()
     map_position = _build_map_position(
         camera_id,
@@ -332,7 +383,10 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         "visibility": details.get("visibility"),
         "quality_flag": details.get("quality_flag"),
         "flow_rate_vph": details.get("flow_rate_vph"),
-        "per_frame": details.get("per_frame") or [],
+        "latest_frame_url": latest_frame.get("image_url"),
+        "latest_debug_frame_url": latest_frame.get("debug_image_url"),
+        "latest_image_url": latest_frame.get("display_image_url"),
+        "per_frame": per_frame,
         "map_position": map_position,
     }
 

@@ -94,6 +94,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     .stat .v { font-size: 1.05rem; font-weight: 600; margin-top: 2px; }
     .section { margin-top: 16px; }
     .section h3 { font-size: 0.82rem; margin: 0 0 8px; color: #cbd5e1; border-bottom: 1px solid rgba(148,163,184,0.2); padding-bottom: 5px; }
+    .frame-preview { width: 100%; display: block; border-radius: 12px; border: 1px solid rgba(148,163,184,0.25); background: rgba(2,6,23,0.85); }
     .flowbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; font-size: 0.62rem; font-weight: 700; }
     .flowbar div { display: flex; align-items: center; justify-content: center; color: #0f172a; }
     .nb { background: #38bdf8; } .sb { background: #f472b6; }
@@ -200,6 +201,9 @@ async function openDetail(id, cam) {
       fetch(`/api/cameras/${encodeURIComponent(id)}/history?limit=12`).then(r => r.ok ? r.json() : [])
     ]);
     const color = densityColor(detail.density);
+    const latestImageSection = detail.latest_image_url
+      ? `<div class="section"><h3>${detail.latest_debug_frame_url ? 'Latest tracked frame' : 'Latest frame'}</h3><img class="frame-preview" src="${detail.latest_image_url}" alt="Latest frame for camera ${detail.camera_id}"></div>`
+      : '<div class="section"><h3>Latest frame</h3><p class="muted">No saved frame available.</p></div>';
     const split = detail.flow_rate_vph || {};
     const nb = split.northbound || 0, sb = split.southbound || 0, tot = nb + sb;
     const nbW = tot ? Math.round(nb / tot * 100) : 50;
@@ -207,6 +211,7 @@ async function openDetail(id, cam) {
       <h2>${detail.name || 'Camera ' + detail.camera_id}</h2>
       <p class="sub">ID ${detail.camera_id} · ${[detail.district, detail.sub_district].filter(Boolean).join(' · ') || 'Location pending'}</p>
       <span class="density-badge" style="background:${color}">${(detail.density || 'unknown').toUpperCase()}</span>
+      ${latestImageSection}
       <div class="stat-grid">
         <div class="stat"><div class="k">Vehicles</div><div class="v">${detail.vehicle_count ?? '—'}</div></div>
         <div class="stat"><div class="k">Active tracks</div><div class="v">${detail.active_tracks ?? '—'}</div></div>

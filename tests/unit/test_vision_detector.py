@@ -39,6 +39,56 @@ class TestDensityScorer:
         assert scorer.from_coverage(0.45) == "heavy"
         assert scorer.from_coverage(0.75) == "blocked"
 
+    def test_from_count_uses_camera_specific_thresholds_when_available(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        config_path = tmp_path / "camera_density_thresholds.json"
+        config_path.write_text(
+            """
+            {
+              "cameras": {
+                "49": {"light": 3, "moderate": 8, "heavy": 12}
+              }
+            }
+            """.strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "trafficcam.vision.density_scorer.settings",
+            SimpleNamespace(
+                density_threshold_light=5,
+                density_threshold_moderate=15,
+                density_threshold_heavy=30,
+                camera_density_thresholds_path=str(config_path),
+            ),
+        )
+
+        scorer = DensityScorer(camera_id="49")
+        assert scorer.from_count(2) == "light"
+        assert scorer.from_count(3) == "moderate"
+        assert scorer.from_count(8) == "heavy"
+        assert scorer.from_count(12) == "blocked"
+
+    def test_from_count_falls_back_to_global_when_camera_thresholds_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "trafficcam.vision.density_scorer.settings",
+            SimpleNamespace(
+                density_threshold_light=5,
+                density_threshold_moderate=15,
+                density_threshold_heavy=30,
+                camera_density_thresholds_path="config/does-not-exist.json",
+            ),
+        )
+
+        scorer = DensityScorer(camera_id="49")
+        assert scorer.from_count(4) == "light"
+        assert scorer.from_count(5) == "moderate"
+
 
 class TestZeroShotDetectorFallback:
     """Tests for ZeroShotDetector that don't require the model to be loaded."""

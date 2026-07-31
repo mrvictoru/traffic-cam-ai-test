@@ -64,6 +64,10 @@ class Settings:
     density_threshold_light: int = int(os.getenv("DENSITY_LIGHT", "5"))
     density_threshold_moderate: int = int(os.getenv("DENSITY_MODERATE", "15"))
     density_threshold_heavy: int = int(os.getenv("DENSITY_HEAVY", "30"))
+    camera_density_thresholds_path: str = os.getenv(
+        "CAMERA_DENSITY_THRESHOLDS_PATH",
+        "config/camera_density_thresholds.json",
+    )
     night_heavy_min_confidence: float = float(os.getenv("NIGHT_HEAVY_MIN_CONFIDENCE", "0.4"))
     night_blocked_min_confidence: float = float(os.getenv("NIGHT_BLOCKED_MIN_CONFIDENCE", "0.5"))
     night_density_downgrade_steps: int = int(os.getenv("NIGHT_DENSITY_DOWNGRADE_STEPS", "1"))

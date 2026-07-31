@@ -197,7 +197,7 @@ def _analyze_burst(
         debug_output_dir = Path(frame_paths[0]).parent / settings.supervision_debug_dirname
 
     for idx, frame_path in enumerate(frame_paths):
-        detection = detector.analyze(frame_path)
+        detection = detector.analyze(frame_path, camera_id=camera_id)
         if roi_polygon or flow_line:
             width, height = image_size(frame_path)
             frame_width, frame_height = width, height

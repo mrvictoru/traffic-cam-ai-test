@@ -281,14 +281,64 @@ def _resolve_density(analysis: dict[str, Any], details: dict[str, Any]) -> str:
     return str(details.get("density") or analysis.get("label") or "unknown")
 
 
+_MANIFEST_PATH = Path(os.getenv("CAMERA_MANIFEST_PATH", "data/manifest.json"))
+
+
+def _load_manifest_cameras(path: Path | None = None) -> list[dict[str, Any]]:
+    """Load cameras from the discovery manifest.
+
+    Returns an empty list when the file is missing or invalid so the dashboard
+    can still show whatever cameras have analysis records.
+    """
+    target = path or _MANIFEST_PATH
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    cameras = payload.get("cameras")
+    if not isinstance(cameras, list):
+        return []
+    return [entry for entry in cameras if isinstance(entry, dict)]
+
+
 def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
-    """Return camera summaries enriched with congestion and map-position metadata."""
+    """Return camera summaries enriched with congestion and map-position metadata.
+
+    Cameras from the discovery manifest are always included so newly discovered
+    feeds appear on the dashboard before their first analysis run completes;
+    those entries simply carry "unknown" congestion until data exists.
+    """
     if store is None:
         store = JsonStore("data")
 
     coordinates = _load_camera_coordinates()
     analyses = _load_analyses(store)
+    # Seed grouped entries from the manifest first. Analysis records below
+    # enrich these entries; cameras without any history stay visible.
+    manifest_cameras = {
+        str(camera.get("cam_id")): camera
+        for camera in _load_manifest_cameras()
+        if camera.get("cam_id")
+    }
     grouped: dict[str, dict[str, Any]] = {}
+    for cam_id, camera in manifest_cameras.items():
+        grouped[cam_id] = {
+            "camera_id": cam_id,
+            "name": camera.get("name"),
+            "district": camera.get("district"),
+            "sub_district": camera.get("sub_district"),
+            "latest_density": "unknown",
+            "latest_captured_at": None,
+            "latest_label": None,
+            "latest_congestion_score": None,
+            "latest_vehicle_count": None,
+            "latest_flow_total": None,
+            "latest_flow_split": None,
+            "latitude": None,
+            "longitude": None,
+            "density_rank": _DENSITY_PRIORITY["unknown"],
+            "map_position": None,
+        }
     for analysis in analyses:
         camera_id = analysis.get("camera_id") or "unknown"
         details = analysis.get("details") or {}
@@ -318,6 +368,13 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
         )
         if not existing.get("name"):
             existing["name"] = capture_result.get("name")
+        # Manifest metadata fills identity gaps so cameras discovered but not
+        # yet analyzed still show proper names and district info.
+        manifest_entry = manifest_cameras.get(str(camera_id))
+        if manifest_entry:
+            existing["name"] = existing.get("name") or manifest_entry.get("name")
+            existing["district"] = existing.get("district") or manifest_entry.get("district")
+            existing["sub_district"] = existing.get("sub_district") or manifest_entry.get("sub_district")
         if not existing.get("district"):
             existing["district"] = capture_result.get("district")
         if not existing.get("sub_district"):
@@ -344,6 +401,24 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             if position.get("latitude") is not None and position.get("longitude") is not None:
                 existing["latitude"] = position.get("latitude")
                 existing["longitude"] = position.get("longitude")
+
+    # Ensure manifest-only cameras (no analysis records yet) also get map
+    # positions so they appear on the dashboard immediately after discovery.
+    for camera_id, existing in grouped.items():
+        if existing.get("map_position") is not None:
+            continue
+        existing["map_position"] = _build_map_position(
+            camera_id,
+            existing.get("district"),
+            existing.get("sub_district"),
+            {},
+            {},
+            coordinates,
+        )
+        position = existing["map_position"]
+        if position.get("latitude") is not None and position.get("longitude") is not None:
+            existing["latitude"] = position.get("latitude")
+            existing["longitude"] = position.get("longitude")
 
     return sorted(grouped.values(), key=lambda item: item["camera_id"])
 

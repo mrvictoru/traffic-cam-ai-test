@@ -8,6 +8,18 @@ import trafficcam.api.routes as routes
 from trafficcam.storage.json_store import JsonStore
 
 
+@pytest.fixture(autouse=True)
+def _isolate_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the manifest loader at an empty temp path.
+
+    The tests call ``reload(routes)``, which re-reads ``CAMERA_MANIFEST_PATH``
+    from the environment; without this, the repo's real data/manifest.json
+    would leak extra cameras into every summary assertion below.
+    """
+    missing = tmp_path / "missing-manifest.json"
+    monkeypatch.setenv("CAMERA_MANIFEST_PATH", str(missing))
+
+
 def _seed_analysis(store: JsonStore, camera_id: str = "cam1") -> None:
     store.save_json(
         f"analyses/{camera_id}/001.json",

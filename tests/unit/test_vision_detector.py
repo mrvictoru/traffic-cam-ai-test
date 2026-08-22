@@ -115,6 +115,15 @@ class TestCongestionScore:
         noisy = scorer.score(count=20, mean_confidence=0.2)
         assert noisy < trusted
 
+    def test_score_low_confidence_discounts_quadratically(self) -> None:
+        # Regression: a storm of low-confidence detections (e.g. 94 boxes at
+        # conf 0.24) must not read as "blocked". Below full-trust confidence
+        # the discount is quadratic, so noisy detections contribute very little.
+        scorer = DensityScorer(light=5, moderate=15, heavy=30)
+        noisy_score = scorer.score(coverage_ratio=0.5, count=40, mean_confidence=0.24)
+        assert scorer.label_from_score(noisy_score) != "blocked"
+        assert noisy_score < 50.0
+
     def test_score_bounded_0_100(self) -> None:
         scorer = DensityScorer(light=5, moderate=15, heavy=30)
         assert scorer.score(coverage_ratio=1.0, count=999, mean_confidence=1.0) <= 100.0

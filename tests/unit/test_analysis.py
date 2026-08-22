@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+import trafficcam.api.routes as api_routes
 from trafficcam.analysis.metrics import average_confidence
 from trafficcam.analysis.scene_classifier import SceneClassifier
 from trafficcam.analysis.traffic_detector import TrafficDetector
@@ -52,7 +55,12 @@ def test_database_store_persists_records(tmp_path: Path) -> None:
     assert rows[0]["status"] == "ok"
 
 
-def test_api_routes_expose_camera_summaries(tmp_path: Path) -> None:
+def test_api_routes_expose_camera_summaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Isolate from the repo's real manifest so only the seeded cameras appear.
+    monkeypatch.setattr(
+        api_routes, "_load_manifest_cameras", lambda path=None: []
+    )
+
     store = JsonStore(tmp_path)
     store.save_json(
         "analyses/cam1/001.json",

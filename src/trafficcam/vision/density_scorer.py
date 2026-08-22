@@ -213,7 +213,9 @@ class DensityScorer:
             conf_factor = 1.0
         else:
             # Full trust at or above CONFIDENCE_FULL_TRUST; below that,
-            # progressively discount down to half trust at zero confidence.
+            # discount quadratically toward zero trust so noisy low-confidence
+            # detections cannot manufacture congestion that isn't really
+            # there (e.g. dozens of boxes at conf ~0.24 reading "blocked").
             ratio = clamp01(mean_confidence / CONFIDENCE_FULL_TRUST)
-            conf_factor = 1.0 if ratio >= 1.0 else 0.5 + 0.5 * ratio
+            conf_factor = 1.0 if ratio >= 1.0 else ratio ** 2
         return round(clamp01(base * conf_factor / 100.0) * 100.0, 2)

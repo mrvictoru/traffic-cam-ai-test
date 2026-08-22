@@ -2,28 +2,33 @@
   "cameras": {
     "49": {
       "name": "新馬路與南灣大馬路交界",
-      "latitude": 22.1935,
-      "longitude": 113.5410
+      "latitude": 22.1928,
+      "longitude": 113.5405,
+      "bearing": 45
     },
     "50": {
       "name": "水坑尾街與南灣大馬路交界路口",
-      "latitude": 22.1948,
-      "longitude": 113.5445
+      "latitude": 22.1952,
+      "longitude": 113.5460,
+      "bearing": 90
     },
     "51": {
       "name": "友誼大橋近港澳碼頭出口交匯處",
-      "latitude": 22.1893,
-      "longitude": 113.5560
+      "latitude": 22.1921,
+      "longitude": 113.5647,
+      "bearing": 120
     },
     "52": {
       "name": "友誼大橋近北安入口交匯處",
-      "latitude": 22.1628,
-      "longitude": 113.5750
+      "latitude": 22.1566,
+      "longitude": 113.5839,
+      "bearing": 200
     },
     "58": {
       "name": "外港客運碼頭 A",
-      "latitude": 22.1970,
-      "longitude": 113.5590
+      "latitude": 22.1955,
+      "longitude": 113.5622,
+      "bearing": 270
     }
   }
 }

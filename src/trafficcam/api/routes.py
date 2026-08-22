@@ -82,13 +82,33 @@ _DENSITY_PRIORITY = {
 }
 _OUTPUT_PREFIX = "output/"
 
+# Cache for parsed analysis records keyed by the data directory's mtime so
+# repeated API requests don't re-parse every JSON file on disk.
+_ANALYSES_CACHE: dict[str, Any] = {"key": None, "records": None}
+
+
+def _data_dir_signature(store: JsonStore) -> tuple[str, float] | None:
+    root = Path(getattr(store, "root_dir", Path("data")))
+    try:
+        stat = root.stat()
+        return (str(root.resolve()), stat.st_mtime_ns)
+    except OSError:
+        return (str(Path("data").resolve()), 0.0)
+
 
 def _load_analyses(store: JsonStore) -> list[dict[str, Any]]:
-    return [
+    signature = _data_dir_signature(store)
+    if signature is not None and _ANALYSES_CACHE["key"] == signature and _ANALYSES_CACHE["records"] is not None:
+        return _ANALYSES_CACHE["records"]
+    records = [
         store.load_json(path)
         for path in store.list_records(prefix="analyses/")
         if path.endswith(".json")
     ]
+    if signature is not None:
+        _ANALYSES_CACHE["key"] = signature
+        _ANALYSES_CACHE["records"] = records
+    return records
 
 
 def _normalize_output_path(path_value: Any) -> str | None:
@@ -286,6 +306,8 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 "latest_density": None,
                 "latest_captured_at": None,
                 "latest_label": None,
+                "latest_congestion_score": None,
+                "latest_vehicle_count": None,
                 "latest_flow_total": None,
                 "latest_flow_split": None,
                 "latitude": None,
@@ -304,6 +326,8 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             existing["latest_density"] = density
             existing["latest_captured_at"] = captured_at
             existing["latest_label"] = analysis.get("label")
+            existing["latest_congestion_score"] = details.get("congestion_score")
+            existing["latest_vehicle_count"] = details.get("vehicle_count")
             existing["latest_flow_total"] = total_flow.get("total")
             existing["latest_flow_split"] = total_flow if total_flow else None
             existing["density_rank"] = _DENSITY_PRIORITY.get(str(density).lower(), _DENSITY_PRIORITY["unknown"])
@@ -376,6 +400,8 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         "sub_district": capture_result.get("sub_district"),
         "stream_url": capture_result.get("stream_url"),
         "vehicle_count": details.get("vehicle_count"),
+        "congestion_score": details.get("congestion_score"),
+        "coverage_ratio": details.get("coverage_ratio"),
         "mean_confidence": details.get("mean_confidence"),
         "active_tracks": details.get("active_tracks"),
         "scene": details.get("scene"),
@@ -412,6 +438,7 @@ def get_camera_history(
             "captured_at": record.get("captured_at"),
             "density": _resolve_density(record, record.get("details") or {}),
             "vehicle_count": (record.get("details") or {}).get("vehicle_count"),
+            "congestion_score": (record.get("details") or {}).get("congestion_score"),
             "flow_rate_vph": (record.get("details") or {}).get("flow_rate_vph"),
         }
         for record in analyses
@@ -420,3 +447,42 @@ def get_camera_history(
     # is invoked directly (e.g. in unit tests). Resolve the concrete value.
     limit_value = limit if isinstance(limit, int) else int(getattr(limit, "default", 12))
     return history[-limit_value:]
+
+
+@router.get("/overview")
+def get_overview(store: Any = None) -> dict[str, Any]:
+    """City-wide congestion overview for the dashboard header cards."""
+    summaries = build_camera_summaries(store=store)
+    counts = {"light": 0, "moderate": 0, "heavy": 0, "blocked": 0, "unknown": 0}
+    scores: list[float] = []
+    for cam in summaries:
+        counts[str(cam.get("latest_density") or "unknown").lower()] = (
+            counts.get(str(cam.get("latest_density") or "unknown").lower(), 0) + 1
+        )
+        score = cam.get("latest_congestion_score")
+        if isinstance(score, (int, float)):
+            scores.append(float(score))
+    worst = sorted(
+        summaries,
+        key=lambda c: (
+            _DENSITY_PRIORITY.get(str(c.get("latest_density") or "unknown").lower(), 0),
+            float(c.get("latest_congestion_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    return {
+        "camera_count": len(summaries),
+        "density_counts": {k: v for k, v in counts.items() if k != "unknown"} | {"unknown": counts["unknown"]},
+        "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "worst_cameras": [
+            {
+                "camera_id": c.get("camera_id"),
+                "name": c.get("name"),
+                "district": c.get("district"),
+                "density": c.get("latest_density"),
+                "congestion_score": c.get("latest_congestion_score"),
+                "captured_at": c.get("latest_captured_at"),
+            }
+            for c in worst[:5]
+        ],
+    }

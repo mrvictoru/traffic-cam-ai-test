@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && r
 RUN pip install --no-cache-dir \
     pytest fastapi "uvicorn[standard]" \
     transformers \
-    supervision \
+    "supervision>=0.25.0" \
     ultralytics \
     torch torchvision \
     opencv-python-headless \

@@ -102,7 +102,7 @@ class Settings:
     capture_burst_fps: float = float(os.getenv("CAPTURE_BURST_FPS", "1.0"))
     capture_warmup_seconds: float = float(os.getenv("CAPTURE_WARMUP_SECONDS", "0.0"))
     roi_config_path: str = os.getenv("ROI_CONFIG_PATH", "config/camera_rois.json")
-    roi_filter_enabled: bool = os.getenv("ROI_FILTER_ENABLED", "0").strip() in {"1", "true", "yes", "on"}
+    roi_filter_enabled: bool = os.getenv("ROI_FILTER_ENABLED", "1").strip() in {"1", "true", "yes", "on"}
     flow_line_config_path: str = os.getenv("FLOW_LINE_CONFIG_PATH", "config/camera_flow_lines.json")
 
     # Trend analysis

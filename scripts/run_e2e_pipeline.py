@@ -30,7 +30,9 @@ from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
 from trafficcam.models import FlowSplit
 from trafficcam.storage.json_store import JsonStore
 from trafficcam.vision import ZeroShotDetector, SceneClassifier, build_tracker
+from trafficcam.vision.density_scorer import DensityScorer
 from trafficcam.vision.roi import (
+    compute_coverage_ratio,
     filter_detections_to_roi,
     image_size,
     line_to_pixels,
@@ -198,7 +200,9 @@ def _analyze_burst(
 
     for idx, frame_path in enumerate(frame_paths):
         detection = detector.analyze(frame_path, camera_id=camera_id)
-        if roi_polygon or flow_line:
+        # Frame size is needed whenever ROI filtering, flow lines, or
+        # coverage measurement apply.
+        if roi_polygon or flow_line or detection.get("detections"):
             width, height = image_size(frame_path)
             frame_width, frame_height = width, height
             if flow_line_pixels is None and flow_line:
@@ -222,10 +226,32 @@ def _analyze_burst(
                 else 0.0,
                 4,
             )
+        # Coverage of road area by vehicle boxes (normalized congestion signal).
+        if frame_width > 0 and frame_height > 0:
+            coverage_ratio = compute_coverage_ratio(
+                detection.get("detections", []),
+                roi_polygon,
+                frame_width,
+                frame_height,
+            )
+        else:
+            coverage_ratio = None
+        scorer = DensityScorer(camera_id=camera_id)
+        congestion_score = scorer.score(
+            coverage_ratio=coverage_ratio,
+            count=detection.get("vehicle_count", 0),
+            mean_confidence=detection.get("confidence", 0.0),
+        )
         tracks = tracker.update(detection.get("detections", []))
         tracker_detections = getattr(tracker, "latest_detections", None)
         if flow_counter is not None and tracker_detections is not None:
-            flow_counter.trigger(tracker_detections)
+            try:
+                flow_counter.trigger(tracker_detections)
+            except (ValueError, TypeError) as exc:
+                # Incompatible detection format from a fallback tracker —
+                # disable further counting rather than aborting the analysis.
+                LOGGER.warning("Line counter disabled after error: %s", exc)
+                flow_counter = None
         line_crossings = _line_counter_snapshot(flow_counter)
         LOGGER.info(
             "Frame %d: %d detections (density=%s, confidence=%.3f, tracks=%d)",
@@ -244,6 +270,8 @@ def _analyze_burst(
                 "confidence": detection.get("confidence", 0.0),
                 "active_tracks": len(tracks),
                 "line_crossings": line_crossings,
+                "coverage_ratio": coverage_ratio,
+                "congestion_score": congestion_score,
             }
         )
         if debug_output_dir is not None:
@@ -263,21 +291,52 @@ def _analyze_burst(
         middle_frame = frame_paths[len(frame_paths) // 2]
         scene_info = scene_classifier.classify(middle_frame)
 
-    # Aggregate across burst
+    # Aggregate across burst. Use MEAN per-frame counts (summing counts the
+    # same vehicles once per frame) and derive the final density from the
+    # mean continuous congestion score for graded, comparable results.
     total_vehicles = sum(r["vehicle_count"] for r in per_frame_results)
+    mean_vehicle_count = (
+        round(total_vehicles / len(per_frame_results), 2) if per_frame_results else 0
+    )
     mean_confidence = (
         sum(r["confidence"] for r in per_frame_results) / len(per_frame_results)
         if per_frame_results else 0.0
     )
+    coverage_values = [
+        r["coverage_ratio"]
+        for r in per_frame_results
+        if r.get("coverage_ratio") is not None
+    ]
+    mean_coverage = (
+        sum(coverage_values) / len(coverage_values) if coverage_values else None
+    )
+    mean_score = (
+        round(sum(r["congestion_score"] for r in per_frame_results) / len(per_frame_results), 2)
+        if per_frame_results
+        else None
+    )
     density_counts: dict[str, int] = {}
     for r in per_frame_results:
         density_counts[r["density"]] = density_counts.get(r["density"], 0) + 1
-    dominant_density = max(density_counts, key=density_counts.get) if density_counts else "unknown"
-    dominant_density = _calibrate_density_for_scene(
-        dominant_density,
-        scene_info,
-        mean_confidence,
-    )
+    scorer = DensityScorer(camera_id=camera_id)
+    if mean_score is not None:
+        dominant_density = scorer.label_from_score(mean_score)
+        # The continuous score already scales by detection confidence, so
+        # applying the legacy night/low-quality downgrade again would punish
+        # low-confidence runs twice.
+        density_calibrated = dominant_density
+    else:
+        # Legacy fallback: mode of per-frame labels with deterministic
+        # higher-severity tie-breaking.
+        dominant_density = max(
+            density_counts,
+            key=lambda k: (density_counts[k], _DENSITY_LEVELS.index(k)),
+        )
+        density_calibrated = _calibrate_density_for_scene(
+            dominant_density,
+            scene_info,
+            mean_confidence,
+        )
     flow_split = FlowSplit()
     if flow_line and frame_width > 0 and frame_height > 0:
         flow_split = compute_directional_flow_split(
@@ -291,17 +350,22 @@ def _analyze_burst(
     return {
         "camera_id": camera_id,
         "captured_at": captured_at,
-        "label": dominant_density,
+        "label": density_calibrated,
         "details": {
-            "density": dominant_density,
-            "vehicle_count": total_vehicles,
+            "density": density_calibrated,
+            "vehicle_count": mean_vehicle_count,
+            "total_detections_burst": total_vehicles,
+            "congestion_score": mean_score if mean_score is not None else 0.0,
+            "coverage_ratio": round(mean_coverage, 4) if mean_coverage is not None else None,
             "mean_confidence": round(mean_confidence, 4),
             "active_tracks": tracker.active_count,
             "scene": scene_info.get("scene", "unknown"),
             "lighting": scene_info.get("lighting", "unknown"),
             "visibility": scene_info.get("visibility", "unknown"),
             "quality_flag": scene_info.get("quality_flag", "unknown"),
-            "raw_density": max(density_counts, key=density_counts.get) if density_counts else "unknown",
+            "raw_density": max(density_counts, key=density_counts.get) if density_counts else dominant_density,
+            # NOTE: despite the legacy name, these are line crossings observed
+            # during this short burst — not vehicles per hour.
             "flow_rate_vph": flow_split.to_dict(),
             "line_crossings": line_crossings,
             "tracking_backend": getattr(tracker, "backend_name", "simple"),
@@ -342,29 +406,78 @@ def _run_single_cycle(
         roi_polygon = roi_registry.get(camera_id)
         flow_line = flow_line_registry.get(camera_id)
 
-        capture = capturer.capture_camera(
-            camera,
-            frame_count=frame_count,
-            burst_fps=burst_fps,
-            warmup_seconds=warmup_seconds,
-        )
+        try:
+            capture = capturer.capture_camera(
+                camera,
+                frame_count=frame_count,
+                burst_fps=burst_fps,
+                warmup_seconds=warmup_seconds,
+            )
+        except Exception as exc:
+            LOGGER.exception("Capture failed for camera %s; skipping", camera_id)
+            capture = {
+                "cam_id": camera_id,
+                "name": camera.get("name"),
+                "district": camera.get("district"),
+                "sub_district": camera.get("sub_district"),
+                "stream_url": (camera.get("stream_urls") or [None])[0],
+                "frame_paths": [],
+                "error": str(exc),
+            }
         capture_results.append(capture)
 
         if not capture["frame_paths"]:
             continue
 
-        analysis = _analyze_burst(
-            capture["frame_paths"],
-            camera_id,
-            capture,
-            roi_polygon=roi_polygon,
-            flow_line=flow_line,
-        )
+        # Isolate analysis failures so one broken model/camera cannot abort
+        # the remaining cameras in the cycle.
+        try:
+            analysis = _analyze_burst(
+                capture["frame_paths"],
+                camera_id,
+                capture,
+                roi_polygon=roi_polygon,
+                flow_line=flow_line,
+            )
+        except Exception as exc:
+            LOGGER.exception("Analysis failed for camera %s; recording error", camera_id)
+            analysis = {
+                "camera_id": camera_id,
+                "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "label": "unknown",
+                "details": {
+                    "density": "unknown",
+                    "vehicle_count": 0,
+                    "congestion_score": 0.0,
+                    "coverage_ratio": None,
+                    "mean_confidence": 0.0,
+                    "analysis_error": str(exc),
+                    "raw_density": "unknown",
+                    "flow_rate_vph": {"northbound": 0, "southbound": 0, "total": 0},
+                    "line_crossings": {"in": 0, "out": 0, "total": 0},
+                    "frame_count": 0,
+                    "per_frame": [],
+                    "capture_result": {
+                        "cam_id": camera_id,
+                        "name": capture.get("name"),
+                        "district": capture.get("district"),
+                        "sub_district": capture.get("sub_district"),
+                        "stream_url": capture.get("stream_url"),
+                        "roi_applied": bool(roi_polygon),
+                        "debug_frames_dir": None,
+                    },
+                },
+            }
         analysis_records.append(analysis)
 
         # Persist analysis record
         ts = analysis["captured_at"].replace(":", "").replace("-", "").replace(".", "")
         record_path = f"analyses/{camera_id}/{ts}.json"
+        # Multiple cycles within the same second must not overwrite each other.
+        suffix = 1
+        while (Path(store.root_dir) / record_path).exists():
+            record_path = f"analyses/{camera_id}/{ts}_{suffix}.json"
+            suffix += 1
         store.save_json(record_path, analysis)
 
     return capture_results, analysis_records

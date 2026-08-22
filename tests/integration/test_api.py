@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from trafficcam.api.main import app
@@ -18,6 +19,8 @@ def _seed_analysis(store: JsonStore, camera_id: str, captured_at: str, density: 
             "details": {
                 "density": density,
                 "vehicle_count": vehicle_count,
+                "congestion_score": min(100.0, vehicle_count * 3.0),
+                "coverage_ratio": 0.12,
                 "mean_confidence": 0.67,
                 "active_tracks": 8,
                 "scene": "day",
@@ -102,6 +105,27 @@ def test_api_endpoints_serve_persisted_camera_data(tmp_path: Path, monkeypatch) 
         "2026-06-24T09:00:00Z",
     ]
     assert history[-1]["density"] == "heavy"
+    assert history[-1]["congestion_score"] == pytest.approx(66.0)
+
+
+def test_api_overview_endpoint(tmp_path: Path, monkeypatch) -> None:
+    store = JsonStore(tmp_path / "data")
+    _seed_analysis(store, "49", "2026-06-24T09:00:00Z", "heavy", 22)
+    _seed_analysis(store, "50", "2026-06-24T09:05:00Z", "light", 5)
+    monkeypatch.chdir(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.get("/api/overview")
+
+    assert response.status_code == 200
+    overview = response.json()
+    assert overview["camera_count"] == 2
+    counts = overview["density_counts"]
+    assert counts["heavy"] == 1
+    assert counts["light"] == 1
+    assert overview["average_score"] is not None
+    worst_ids = [cam["camera_id"] for cam in overview["worst_cameras"]]
+    assert worst_ids[0] == "49"
 
 
 def test_api_returns_404_for_unknown_camera(tmp_path: Path, monkeypatch) -> None:

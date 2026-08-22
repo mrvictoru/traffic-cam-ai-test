@@ -200,3 +200,80 @@ def filter_detections_to_roi(
             filtered.append(detection)
 
     return filtered
+
+
+def compute_coverage_ratio(
+    detections: list[dict[str, Any]],
+    polygon_norm: list[list[float]] | None,
+    image_width: int,
+    image_height: int,
+) -> float:
+    """Return the fraction of the ROI area covered by vehicle bounding boxes.
+
+    Uses a rasterized mask (cv2.fillPoly) so box/ROI overlap is measured
+    correctly even when boxes extend beyond the polygon. When no ROI is
+    defined the full frame acts as the region. Result is in [0.0, 1.0] and is
+    normalized across camera angles/distances, unlike raw vehicle counts.
+    """
+    if image_width <= 0 or image_height <= 0:
+        return 0.0
+
+    try:
+        import cv2
+
+        mask = np.zeros((image_height, image_width), dtype=np.uint8)
+        if polygon_norm:
+            cv2.fillPoly(
+                mask,
+                [_polygon_to_pixels(polygon_norm, image_width, image_height)],
+                1,
+            )
+        else:
+            mask[:] = 1
+
+        roi_area = int(mask.sum())
+        if roi_area <= 0:
+            return 0.0
+
+        box_mask = np.zeros_like(mask)
+        boxes: list[np.ndarray] = []
+        for det in detections:
+            box = det.get("box", {})
+            xmin = float(box.get("xmin", 0.0))
+            ymin = float(box.get("ymin", 0.0))
+            xmax = float(box.get("xmax", 0.0))
+            ymax = float(box.get("ymax", 0.0))
+            if xmax <= xmin or ymax <= ymin:
+                continue
+            boxes.append(
+                np.array(
+                    [
+                        [int(round(xmin)), int(round(ymin))],
+                        [int(round(xmax)), int(round(ymin))],
+                        [int(round(xmax)), int(round(ymax))],
+                        [int(round(xmin)), int(round(ymax))],
+                    ],
+                    dtype=np.int32,
+                )
+            )
+        if not boxes:
+            return 0.0
+        cv2.fillPoly(box_mask, boxes, 1)
+
+        overlap = int(np.logical_and(mask, box_mask).sum())
+        return round(min(1.0, overlap / roi_area), 4)
+    except ImportError:  # pragma: no cover - cv2 is a hard dep in the image
+        # Fallback: analytic estimate ignoring box/ROI clipping.
+        frame_area = float(image_width * image_height)
+        region_area = frame_area
+        if polygon_norm:
+            xs = [p[0] * image_width for p in polygon_norm]
+            ys = [p[1] * image_height for p in polygon_norm]
+            region_area = max(1.0, (max(xs) - min(xs)) * (max(ys) - min(ys)))
+        box_area = 0.0
+        for det in detections:
+            box = det.get("box", {})
+            w = max(0.0, float(box.get("xmax", 0.0)) - float(box.get("xmin", 0.0)))
+            h = max(0.0, float(box.get("ymax", 0.0)) - float(box.get("ymin", 0.0)))
+            box_area += w * h
+        return round(min(1.0, box_area / region_area), 4)

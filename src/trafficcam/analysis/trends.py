@@ -61,11 +61,18 @@ def _signed_side(p: Point, line: tuple[Point, Point]) -> float:
 def _crosses_line(
     p_prev: Point, p_curr: Point, line: tuple[Point, Point]
 ) -> bool:
-    """True if the segment p_prev->p_curr intersects the counting line."""
+    """True if the segment p_prev->p_curr intersects (or reaches) the line.
+
+    Reaching the line counts as crossing: at 1 fps a centroid often lands
+    exactly on the counting line between frames and would otherwise never
+    register under a strict sign-flip rule.
+    """
     s_prev = _signed_side(p_prev, line)
     s_curr = _signed_side(p_curr, line)
-    # Strict crossing: signs differ (ignoring exact-on-line edge cases).
-    return s_prev * s_curr < 0
+    if s_prev == s_curr:
+        return False
+    # Sign flip, or movement onto/from the line itself.
+    return (s_prev > 0 >= s_curr) or (s_prev <= 0 < s_curr)
 
 
 def compute_directional_flow_split(
@@ -98,9 +105,11 @@ def compute_directional_flow_split(
                 continue
             s_prev = _signed_side(p_prev, line)
             s_curr = _signed_side(p_curr, line)
-            if s_prev < 0 and s_curr > 0:
+            # Direction convention mirrors _crosses_line: arriving from the
+            # line or below (s_prev <= 0) to above it counts as northbound.
+            if s_prev <= 0 and s_curr > 0:
                 nb_ids.add(track_id)
-            elif s_prev > 0 and s_curr < 0:
+            elif s_prev >= 0 and s_curr < 0:
                 sb_ids.add(track_id)
     return FlowSplit(northbound=len(nb_ids), southbound=len(sb_ids))
 

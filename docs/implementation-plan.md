@@ -138,6 +138,108 @@ Tasks:
 - detect incidents from flow drops and density spikes using rolling baselines,
 - coalesce sustained incidents into representative alerts.
 
+### Phase 4A — Traffic layer quality improvements (Google Maps-style traffic grading)
+
+Goal: move from a vehicle-count approximation to a road-speed-based traffic estimate that more closely matches the semantics of a live traffic layer.
+
+The current prototype already captures the right raw ingredients: object detections, tracked motion, flow splits, confidence, and scene context. The next improvement is to convert those signals into a more accurate estimate of network speed and congestion instead of using only occupancy.
+
+#### 4A.1 Speed-based congestion scoring
+
+The primary improvement is to treat speed as the main signal and use occupancy only as a second signal.
+
+- The tracker already records centroid trajectories across a burst of frames.
+- For each tracked vehicle, compute the displacement between consecutive frames in pixels, then convert to a real-world speed estimate using a per-camera calibration factor such as pixels-per-meter or lane geometry.
+- Aggregate the median speed of tracked vehicles over the burst.
+- Normalize the result against a per-camera free-flow baseline (for example: typical speed at 00:00–06:00 on the same camera, or a generic free-flow speed for that road class).
+- Convert this into a traffic score where:
+  - free-flow speed => low congestion score,
+  - near-stall motion => high congestion score,
+  - very slow motion with dense occupancy => highest congestion score.
+
+This is the core change needed to move from “how many vehicles are visible?” to “how slowly is traffic moving?”
+
+A practical blending formula is:
+
+- score = 0.6 * speed_score + 0.4 * occupancy_score
+- where speed_score is based on the ratio of current median speed to free-flow speed,
+- and occupancy_score is derived from ROI coverage, detection count, and confidence.
+
+This better reflects the semantics used by live map services and reduces false positives caused by a camera seeing many vehicles that are still moving normally.
+
+#### 4A.2 Time-of-day and day-of-week baselines
+
+A fixed threshold is not sufficient for a citywide traffic layer because rush hour and off-peak traffic naturally differ.
+
+- Build rolling baselines per camera for each hour-of-day and weekday pattern.
+- Store values like median vehicle count, median speed, median occupancy, and standard deviation for the previous N weeks of observations.
+- Compare the current reading to the same camera's normal baseline at that time.
+- This allows the UI to say “this is unusually slow for 8:30 AM on a weekday” instead of “this is heavy for this camera all the time.”
+
+The project already contains rolling baseline logic in [src/trafficcam/analysis/baseline.py](../src/trafficcam/analysis/baseline.py) and anomaly detection in [src/trafficcam/analysis/trends.py](../src/trafficcam/analysis/trends.py). The next step is to feed those baseline values back into the main per-camera scoring function so the map color reflects relative traffic conditions, not absolute counts alone.
+
+#### 4A.3 Persistent multi-frame tracking and better motion estimates
+
+The tracker should be maintained across more than a single burst window when possible.
+
+- Keep a lightweight persistent tracker per camera across consecutive capture cycles.
+- Track vehicles over multiple 1-second bursts to estimate movement for longer windows.
+- Use the aggregated motion profile from the previous 3–5 capture cycles to smooth out jitter.
+- This reduces false spikes from a single noisy frame and makes speed estimates more stable.
+
+The tracker is currently used primarily for line-crossing logic. A second use-case should be added: vehicle speed estimation and motion consistency scoring. This can feed both the congestion score and the traffic-layer coloring.
+
+#### 4A.4 Per-camera calibration and lane-aware scoring
+
+Global thresholds will always be limited because each camera has different perspective, distance, lane width, and visible road geometry.
+
+- Use the existing per-camera threshold configuration in `config/camera_density_thresholds.json` as the first calibration layer.
+- Add a per-camera free-flow speed calibration constant and a lane weighting model.
+- Partition each ROI into meaningful regions, such as near-lane / mid-lane / far-lane bands, and weight each band differently so distant vehicles do not contribute the same as close vehicles.
+- Compute lane occupancy and average speed separately for each section and aggregate them.
+
+This is especially important in Macau where a camera may cover a wide road segment with multiple lanes, grade changes, or heavy occlusion at long distances.
+
+#### 4A.5 Better confidence and uncertainty handling
+
+Low-light, rainy, or partially occluded frames should not trigger a false jam reading.
+
+- If scene classification marks the image as night, rain, fog, or low visibility, lower confidence in the speed estimate and widen the acceptable range.
+- Only emit a severe traffic warning when both occupancy and speed are bad at the same time.
+- If confidence is too low, prefer a neutral state (“unknown / degraded”) instead of a misleading red state.
+
+This complements the existing scene classifier and low-confidence downgrades already present in the pipeline.
+
+#### 4A.6 Road-segment aggregation for map overlays
+
+The dashboard should eventually render not just point markers but traffic conditions for road segments.
+
+- Group nearby cameras into corridor-level segments.
+- Average their congestion scores into a corridor score.
+- Draw a polyline or colored road overlay between the segment endpoints.
+- Use two or three traffic colors (green / orange / red) instead of a raw marker dot.
+
+This is the closest step to a Google Maps-like traffic layer: a road segment estimate rather than a camera point estimate. A point marker is still useful for per-camera detail, but the city overlay should be segment-centric.
+
+#### 4A.7 Temporal smoothing and UX polish
+
+Traffic layers should avoid flickering between states from single noisy readings.
+
+- Use a rolling median of the last 3–5 snapshots before publishing the displayed state.
+- Apply small cooldowns when a camera transitions between states to reduce animations from single-frame blips.
+- Keep a `last_updated` timestamp and a `confidence` field for the map overlay so the UI can degrade gracefully.
+
+#### 4A.8 Recommended implementation order
+
+1. add speed estimation from tracked motion,
+2. blend speed + occupancy into a continuous congestion score,
+3. replace zero-shot fixed thresholds with camera-specific baselines,
+4. persist per-camera free-flow and baseline calibration data,
+5. add corridor aggregation to map rendering,
+6. smooth and expose the final traffic layer in the dashboard.
+
+This staged approach keeps the project incremental while steadily pushing the system toward a useful traffic overlay rather than a simple camera alarm list.
+
 ### Phase 5 — Storage and API
 
 Goal: expose the data in a simple way.
@@ -340,7 +442,22 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ---
 
-## 9. Current progress tracker
+## 9. Current project checklist
+
+Status as of 2026-08-23:
+
+- [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
+- [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
+- [x] per-camera motion calibration and free-flow baselines are implemented in `tools/calibrate_freeflow.py` and `src/trafficcam/vision/speed_estimator.py`
+- [x] time-of-day and hour-of-week baseline adjustments are implemented in `src/trafficcam/analysis/temporal.py`
+- [x] the run-once pipeline in `scripts/run_e2e_pipeline.py` now emits speed-aware congestion and temporal adjustment metadata
+- [x] focused validation passed for speed estimation, free-flow calibration, temporal scoring, and detector regression checks
+- [ ] populate live calibration values from actual sustained motion history once more data is collected
+- [ ] complete corridor/road-segment aggregation for a true map-layer style overlay
+- [ ] continue the API/UI polish and richer dashboard integration for drill-down views
+- [ ] add more end-to-end coverage around live camera coordinates and map rendering
+
+## 10. Current progress tracker
 
 This repo already includes the following completed work:
 
@@ -357,10 +474,14 @@ This repo already includes the following completed work:
 
 Work still to do:
 
-- [ ] implement the analysis pipeline in `src/trafficcam/analysis/`
+- [x] implement the analysis pipeline in `src/trafficcam/analysis/`
+- [x] implement speed-based traffic scoring and motion-aware congestion estimation (see `src/trafficcam/vision/speed_estimator.py`; blended via `DensityScorer.score(speed_component=...)`, wired into `scripts/run_e2e_pipeline.py`)
+- [x] add time-of-day baselines for traffic severity (implemented in `src/trafficcam/analysis/temporal.py`; applied to main scoring in `scripts/run_e2e_pipeline.py`)
+- [ ] complete per-camera calibration rollout for traffic severity (free-flow calibration tool added in `tools/calibrate_freeflow.py`; live data still needs to accumulate motion history before config can be populated)
 - [ ] implement storage persistence beyond simple JSON storage
 - [ ] build the API routing and connect it to the persisted results
 - [ ] add a basic web dashboard in `src/trafficcam/web/`
+- [ ] add road-segment / corridor overlays to approximate a Google Maps traffic layer
 - [ ] add richer integration tests for API and UI behavior
 - [ ] refine the capture retry policy and error handling
 

@@ -24,6 +24,10 @@ except Exception:  # pragma: no cover
     _SUPERVISION_AVAILABLE = False
 
 from trafficcam.analysis.trends import TrendAnalyzer, compute_directional_flow_split
+from trafficcam.analysis.temporal import (
+    adjusted_congestion_score,
+    load_camera_baseline,
+)
 from trafficcam.capture.frame_capturer import FrameCapturer
 from trafficcam.config import settings
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
@@ -31,6 +35,13 @@ from trafficcam.models import FlowSplit
 from trafficcam.storage.json_store import JsonStore
 from trafficcam.vision import ZeroShotDetector, SceneClassifier, build_tracker
 from trafficcam.vision.density_scorer import DensityScorer
+from trafficcam.vision.speed_estimator import (
+    estimate_track_speeds,
+    freeflow_for_camera,
+    median_track_speed,
+    moving_vehicle_count,
+    speed_score_from_ratio,
+)
 from trafficcam.vision.roi import (
     compute_coverage_ratio,
     filter_detections_to_roi,
@@ -181,6 +192,7 @@ def _analyze_burst(
     capture_result: dict[str, Any],
     roi_polygon: list[list[float]] | None = None,
     flow_line: tuple[tuple[float, float], tuple[float, float]] | None = None,
+    data_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
     detector = ZeroShotDetector()
@@ -319,6 +331,30 @@ def _analyze_burst(
     for r in per_frame_results:
         density_counts[r["density"]] = density_counts.get(r["density"], 0) + 1
     scorer = DensityScorer(camera_id=camera_id)
+    if speed_component is not None:
+        # Speed-aware blended score: slow tracked motion dominates, occupancy
+        # refines. Falls back to the per-frame mean when no motion data exists.
+        blended_score = scorer.score(
+            coverage_ratio=mean_coverage,
+            count=round(mean_vehicle_count),
+            mean_confidence=mean_confidence,
+            speed_component=speed_component,
+        )
+        mean_score = blended_score if blended_score is not None else mean_score
+
+    # Time-of-day baseline: compare against what this camera normally reads at
+    # this weekday-hour, so a normally-busy rush hour no longer reads blocked.
+    # Degrades to raw score while history is still accumulating.
+    captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    baseline_meta: dict[str, Any] = {"baseline_applied": False}
+    if mean_score is not None:
+        history = load_camera_baseline(data_dir or "data", camera_id)
+        mean_score, baseline_meta = adjusted_congestion_score(
+            mean_score,
+            history,
+            captured_at,
+        )
+
     if mean_score is not None:
         dominant_density = scorer.label_from_score(mean_score)
         # The continuous score already scales by detection confidence, so
@@ -345,6 +381,21 @@ def _analyze_burst(
         )
     line_crossings = _line_counter_snapshot(flow_counter)
 
+    # Speed-based congestion component: median tracked displacement vs the
+    # camera's calibrated free-flow reference. When no calibration or no
+    # motion data exists, the score falls back to occupancy-only blending.
+    median_speed = median_track_speed(tracker.track_histories)
+    freeflow = freeflow_for_camera(camera_id)
+    speed_ratio: float | None = None
+    speed_component: float | None = None
+    if median_speed is not None and freeflow:
+        speed_ratio = round(median_speed / freeflow, 4)
+        speed_component = speed_score_from_ratio(speed_ratio)
+        LOGGER.info(
+            "Speed estimate for %s: median=%.2f px/frame, freeflow=%.2f, ratio=%.2f -> score=%s",
+            camera_id, median_speed, freeflow, speed_ratio, speed_component,
+        )
+
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return {
@@ -364,6 +415,12 @@ def _analyze_burst(
             "visibility": scene_info.get("visibility", "unknown"),
             "quality_flag": scene_info.get("quality_flag", "unknown"),
             "raw_density": max(density_counts, key=density_counts.get) if density_counts else dominant_density,
+            "median_speed_px_per_frame": round(median_speed, 3) if median_speed is not None else None,
+            "freeflow_px_per_frame": freeflow,
+            "speed_ratio": speed_ratio,
+            "speed_component": speed_component,
+            "moving_vehicle_count": moving_vehicle_count(tracker.track_histories),
+            "baseline": baseline_meta,
             # NOTE: despite the legacy name, these are line crossings observed
             # during this short burst — not vehicles per hour.
             "flow_rate_vph": flow_split.to_dict(),
@@ -438,6 +495,7 @@ def _run_single_cycle(
                 capture,
                 roi_polygon=roi_polygon,
                 flow_line=flow_line,
+                data_dir=data_root,
             )
         except Exception as exc:
             LOGGER.exception("Analysis failed for camera %s; recording error", camera_id)

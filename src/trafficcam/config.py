@@ -109,5 +109,10 @@ class Settings:
     trend_min_history: int = int(os.getenv("TREND_MIN_HISTORY", "6"))
     trend_z_threshold: float = float(os.getenv("TREND_Z_THRESHOLD", "2.0"))
 
+    # Speed-aware scoring: speed_ratio = current median speed / free-flow speed.
+    # At or below this ratio traffic is considered stalled (speed score 100);
+    # at 1.0 (free flow) the speed score is 0. Linear in between.
+    speed_stall_ratio: float = float(os.getenv("SPEED_STALL_RATIO", "0.15"))
+
 
 settings = Settings()

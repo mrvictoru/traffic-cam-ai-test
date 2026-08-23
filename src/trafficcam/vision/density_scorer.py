@@ -19,6 +19,11 @@ SCORE_WEIGHT_COVERAGE = float(os.getenv("SCORE_WEIGHT_COVERAGE", "0.5"))
 SCORE_WEIGHT_COUNT = float(os.getenv("SCORE_WEIGHT_COUNT", "0.3"))
 SCORE_WEIGHT_CONFIDENCE = float(os.getenv("SCORE_WEIGHT_CONFIDENCE", "0.2"))
 
+# Speed-aware blending: when tracked-motion data exists, speed becomes the
+# primary congestion signal (Google-Maps-style: slow traffic = congested) and
+# the occupancy blend above shares the remaining weight.
+SCORE_WEIGHT_SPEED = float(os.getenv("SCORE_WEIGHT_SPEED", "0.6"))
+
 # Continuous 0-100 score boundaries used to derive a label from the score.
 _SCORE_LIGHT_MAX = float(os.getenv("CONGESTION_SCORE_LIGHT_MAX", "25.0"))
 _SCORE_MODERATE_MAX = float(os.getenv("CONGESTION_SCORE_MODERATE_MAX", "50.0"))
@@ -180,6 +185,7 @@ class DensityScorer:
         coverage_ratio: float | None = None,
         count: int | None = None,
         mean_confidence: float | None = None,
+        speed_component: float | None = None,
     ) -> float:
         """Compute a continuous 0-100 congestion score.
 
@@ -194,8 +200,22 @@ class DensityScorer:
           reliable; low-confidence frames contribute less signal rather than
           being trusted at face value (weight SCORE_WEIGHT_CONFIDENCE).
 
+        Speed-aware blending: when a speed component is supplied (0-100, where
+        100 = stalled traffic), it takes the primary weight
+        (SCORE_WEIGHT_SPEED, default 0.6) and the occupancy signals share the
+        remainder. This matches traffic-layer semantics where slow motion,
+        not raw count, indicates congestion.
+
         When coverage is unavailable the full weight redistributes to count.
         """
+        if speed_component is not None and 0.0 <= float(speed_component) <= 100.0:
+            return self._score_with_speed(
+                speed_component=float(speed_component),
+                coverage_ratio=coverage_ratio,
+                count=count,
+                mean_confidence=mean_confidence,
+            )
+
         w_cov = SCORE_WEIGHT_COVERAGE if coverage_ratio is not None else 0.0
         w_cnt = min(1.0 - w_cov, max(SCORE_WEIGHT_COUNT, 1.0 - w_cov))
         total_w = w_cov + w_cnt
@@ -219,3 +239,29 @@ class DensityScorer:
             ratio = clamp01(mean_confidence / CONFIDENCE_FULL_TRUST)
             conf_factor = 1.0 if ratio >= 1.0 else ratio ** 2
         return round(clamp01(base * conf_factor / 100.0) * 100.0, 2)
+
+    def _score_with_speed(
+        self,
+        speed_component: float,
+        coverage_ratio: float | None,
+        count: int | None,
+        mean_confidence: float | None,
+    ) -> float:
+        """Blend a speed-derived congestion component with occupancy signals.
+
+        Speed carries SCORE_WEIGHT_SPEED (default 0.6); coverage/count share
+        the remainder using the legacy weighting. Confidence still discounts
+        the occupancy portion, while the speed signal is trusted directly when
+        at least one track contributed displacement data.
+        """
+        w_speed = SCORE_WEIGHT_SPEED
+        w_occ = 1.0 - w_speed
+
+        occ_component = self.score(
+            coverage_ratio=coverage_ratio,
+            count=count,
+            mean_confidence=mean_confidence,
+        )
+
+        base = (w_speed * speed_component) + (w_occ * occ_component)
+        return round(max(0.0, min(100.0, base)), 2)

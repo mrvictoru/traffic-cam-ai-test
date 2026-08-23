@@ -90,8 +90,15 @@ _ANALYSES_CACHE: dict[str, Any] = {"key": None, "records": None}
 def _data_dir_signature(store: JsonStore) -> tuple[str, float] | None:
     root = Path(getattr(store, "root_dir", Path("data")))
     try:
-        stat = root.stat()
-        return (str(root.resolve()), stat.st_mtime_ns)
+        resolved = root.resolve()
+        latest_mtime = 0.0
+        for path in resolved.rglob("*"):
+            if path.is_file():
+                try:
+                    latest_mtime = max(latest_mtime, path.stat().st_mtime_ns)
+                except OSError:
+                    continue
+        return (str(resolved), latest_mtime)
     except OSError:
         return (str(Path("data").resolve()), 0.0)
 
@@ -126,11 +133,15 @@ def _normalize_output_path(path_value: Any) -> str | None:
     return normalized
 
 
-def _output_asset_url(path_value: Any) -> str | None:
+def _output_asset_url(path_value: Any, cache_bust: str | None = None) -> str | None:
     normalized = _normalize_output_path(path_value)
     if normalized is None:
         return None
-    return f"/{normalized}"
+    suffix = ""
+    if cache_bust:
+        safe_cache_bust = str(cache_bust).replace(" ", "T").replace("+", "Z")
+        suffix = f"?v={safe_cache_bust}"
+    return f"/{normalized}{suffix}"
 
 
 def _debug_frame_output_path(frame_path: Any, debug_frames_dir: Any) -> str | None:
@@ -145,14 +156,14 @@ def _debug_frame_output_path(frame_path: Any, debug_frames_dir: Any) -> str | No
     return candidate.as_posix()
 
 
-def _enrich_per_frame(per_frame: list[dict[str, Any]], debug_frames_dir: Any) -> list[dict[str, Any]]:
+def _enrich_per_frame(per_frame: list[dict[str, Any]], debug_frames_dir: Any, cache_bust: str | None = None) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for frame in per_frame:
         record = dict(frame)
         image_path = record.get("image_path")
         debug_image_path = _debug_frame_output_path(image_path, debug_frames_dir)
-        record["image_url"] = _output_asset_url(image_path)
-        record["debug_image_url"] = _output_asset_url(debug_image_path)
+        record["image_url"] = _output_asset_url(image_path, cache_bust=cache_bust)
+        record["debug_image_url"] = _output_asset_url(debug_image_path, cache_bust=cache_bust)
         record["display_image_url"] = record["debug_image_url"] or record["image_url"]
         enriched.append(record)
     return enriched
@@ -274,6 +285,14 @@ def _build_map_position(
     if latitude is not None and longitude is not None:
         return _map_position_from_coordinates(latitude, longitude)
     return _approximate_map_position(camera_id, district, sub_district)
+
+
+def _save_camera_coordinates(path: Path, payload: dict[str, dict[str, Any]]) -> None:
+    """Persist camera coordinates atomically to disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps({"cameras": payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _resolve_density(analysis: dict[str, Any], details: dict[str, Any]) -> str:
@@ -435,6 +454,13 @@ def _latest_analysis_for_camera(store: Any, camera_id: str) -> dict[str, Any] | 
     return max(analyses, key=lambda record: record.get("captured_at") or "")
 
 
+def _manifest_camera_by_id(camera_id: str) -> dict[str, Any] | None:
+    for camera in _load_manifest_cameras():
+        if str(camera.get("cam_id")) == str(camera_id):
+            return camera
+    return None
+
+
 @router.get("/cameras")
 def list_cameras(store: Any = None) -> list[dict[str, Any]]:
     """Return a lightweight summary for each camera seen in persisted analyses."""
@@ -448,13 +474,56 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         store = JsonStore("data")
 
     record = _latest_analysis_for_camera(store, camera_id)
+    manifest_camera = _manifest_camera_by_id(camera_id)
     if record is None:
-        raise HTTPException(status_code=404, detail=f"Unknown camera: {camera_id}")
+        if manifest_camera is None:
+            raise HTTPException(status_code=404, detail=f"Unknown camera: {camera_id}")
+
+        coordinates = _load_camera_coordinates()
+        map_position = _build_map_position(
+            camera_id,
+            manifest_camera.get("district"),
+            manifest_camera.get("sub_district"),
+            {},
+            {},
+            coordinates,
+        )
+        stream_urls = manifest_camera.get("stream_urls") or []
+        stream_url = next((url for url in stream_urls if str(url).lower().endswith(".m3u8")), None)
+        return {
+            "camera_id": camera_id,
+            "captured_at": None,
+            "label": "unknown",
+            "density": "unknown",
+            "name": manifest_camera.get("name"),
+            "district": manifest_camera.get("district"),
+            "sub_district": manifest_camera.get("sub_district"),
+            "stream_url": stream_url,
+            "vehicle_count": None,
+            "congestion_score": None,
+            "coverage_ratio": None,
+            "mean_confidence": None,
+            "active_tracks": None,
+            "scene": None,
+            "lighting": None,
+            "visibility": None,
+            "quality_flag": None,
+            "flow_rate_vph": {},
+            "latest_frame_url": None,
+            "latest_debug_frame_url": None,
+            "latest_image_url": None,
+            "per_frame": [],
+            "map_position": map_position,
+        }
 
     details = record.get("details") or {}
     capture_result = details.get("capture_result") or {}
     debug_frames_dir = capture_result.get("debug_frames_dir")
-    per_frame = _enrich_per_frame(details.get("per_frame") or [], debug_frames_dir)
+    per_frame = _enrich_per_frame(
+        details.get("per_frame") or [],
+        debug_frames_dir,
+        cache_bust=record.get("captured_at"),
+    )
     latest_frame = per_frame[-1] if per_frame else {}
     coordinates = _load_camera_coordinates()
     map_position = _build_map_position(
@@ -470,10 +539,17 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         "captured_at": record.get("captured_at"),
         "label": record.get("label"),
         "density": _resolve_density(record, details),
-        "name": capture_result.get("name"),
-        "district": capture_result.get("district"),
-        "sub_district": capture_result.get("sub_district"),
-        "stream_url": capture_result.get("stream_url"),
+        "name": capture_result.get("name") or (manifest_camera or {}).get("name"),
+        "district": capture_result.get("district") or (manifest_camera or {}).get("district"),
+        "sub_district": capture_result.get("sub_district") or (manifest_camera or {}).get("sub_district"),
+        "stream_url": capture_result.get("stream_url") or next(
+            (
+                url
+                for url in ((manifest_camera or {}).get("stream_urls") or [])
+                if str(url).lower().endswith(".m3u8")
+            ),
+            None,
+        ),
         "vehicle_count": details.get("vehicle_count"),
         "congestion_score": details.get("congestion_score"),
         "coverage_ratio": details.get("coverage_ratio"),
@@ -518,10 +594,51 @@ def get_camera_history(
         }
         for record in analyses
     ]
-    # `limit` arrives as an int over HTTP, but is a Query object when the view
-    # is invoked directly (e.g. in unit tests). Resolve the concrete value.
     limit_value = limit if isinstance(limit, int) else int(getattr(limit, "default", 12))
     return history[-limit_value:]
+
+
+@router.put("/cameras/{camera_id}/position")
+def update_camera_position(camera_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist manual camera coordinates so the marker can be dragged into place."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Position payload must be a JSON object")
+
+    latitude = _coerce_coordinate(payload.get("latitude"))
+    longitude = _coerce_coordinate(payload.get("longitude"))
+    if latitude is None or longitude is None:
+        raise HTTPException(status_code=400, detail="latitude and longitude are required")
+
+    bounds = _MACAU_MAP_BOUNDS
+    if not (bounds["lat_min"] <= latitude <= bounds["lat_max"]):
+        raise HTTPException(status_code=422, detail="Latitude is outside Macau bounds")
+    if not (bounds["lon_min"] <= longitude <= bounds["lon_max"]):
+        raise HTTPException(status_code=422, detail="Longitude is outside Macau bounds")
+
+    coords_path = Path(os.getenv("CAMERA_COORDS_PATH", str(Path("config") / "camera_coordinates.json")))
+    coordinates = _load_camera_coordinates(coords_path)
+    entry = dict(coordinates.get(str(camera_id), {}))
+    entry["latitude"] = latitude
+    entry["longitude"] = longitude
+
+    if payload.get("name") is not None:
+        name = str(payload.get("name")).strip()
+        if name:
+            entry["name"] = name
+    if payload.get("bearing") is not None:
+        bearing = _coerce_coordinate(payload.get("bearing"))
+        if bearing is not None:
+            entry["bearing"] = bearing
+
+    coordinates[str(camera_id)] = entry
+    _save_camera_coordinates(coords_path, coordinates)
+
+    return {
+        "camera_id": camera_id,
+        "latitude": latitude,
+        "longitude": longitude,
+        "map_position": _map_position_from_coordinates(latitude, longitude),
+    }
 
 
 @router.get("/overview")

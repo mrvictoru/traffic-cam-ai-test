@@ -61,6 +61,14 @@ python macau_dsat_feed.py --capture-loop --output-dir frames --frame-count 3 --c
 
 This runs the discovery and capture flow repeatedly with a delay between cycles.
 
+### Audit missing camera calibration
+
+```bash
+python -m trafficcam.cli audit-config --pretty --report-file output/config-audit.json
+```
+
+This compares the current manifest against camera coordinates, density thresholds, ROIs, and flow lines, then writes a report with missing counts, missing camera IDs, and a prioritized `next_calibration_queue` for the cameras closest to fully configured.
+
 ## Utility scripts
 
 The repository includes helper tools for live inspection:

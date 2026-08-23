@@ -26,6 +26,143 @@ def _print_json(payload: dict[str, Any], pretty: bool = False) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None))
 
 
+def _load_json(path: str | Path) -> Any:
+    target = Path(path)
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _load_manifest_camera_ids(path: str | Path) -> list[str]:
+    payload = _load_json(path)
+    cameras = payload.get("cameras") if isinstance(payload, dict) else None
+    if not isinstance(cameras, list):
+        return []
+    return [str(entry.get("cam_id")) for entry in cameras if isinstance(entry, dict) and entry.get("cam_id")]
+
+
+def _load_manifest_cameras(path: str | Path) -> list[dict[str, Any]]:
+    payload = _load_json(path)
+    cameras = payload.get("cameras") if isinstance(payload, dict) else None
+    if not isinstance(cameras, list):
+        return []
+    return [entry for entry in cameras if isinstance(entry, dict) and entry.get("cam_id")]
+
+
+def _load_coordinate_ids(path: str | Path) -> set[str]:
+    payload = _load_json(path)
+    cameras = payload.get("cameras") if isinstance(payload, dict) else None
+    if not isinstance(cameras, dict):
+        return set()
+    return {str(camera_id) for camera_id, entry in cameras.items() if isinstance(entry, dict)}
+
+
+def _load_threshold_ids(path: str | Path) -> set[str]:
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return set()
+    entries = payload.get("cameras") if isinstance(payload.get("cameras"), dict) else payload
+    if not isinstance(entries, dict):
+        return set()
+    return {str(camera_id) for camera_id, entry in entries.items() if isinstance(entry, dict)}
+
+
+def _load_plain_object_ids(path: str | Path) -> set[str]:
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return set()
+    return {str(camera_id) for camera_id, entry in payload.items() if isinstance(entry, (dict, list))}
+
+
+def _camera_sort_key(camera_id: str) -> tuple[int, str]:
+    try:
+        return (0, f"{int(camera_id):08d}")
+    except (TypeError, ValueError):
+        return (1, str(camera_id))
+
+
+def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
+    manifest_cameras = _load_manifest_cameras(args.manifest_file)
+    manifest_camera_ids = [str(entry.get("cam_id")) for entry in manifest_cameras]
+    manifest_set = set(manifest_camera_ids)
+    manifest_by_id = {str(entry.get("cam_id")): entry for entry in manifest_cameras}
+
+    coordinate_ids = _load_coordinate_ids(args.coordinates_file)
+    threshold_ids = _load_threshold_ids(args.thresholds_file)
+    roi_ids = _load_plain_object_ids(args.rois_file)
+    flow_line_ids = _load_plain_object_ids(args.flow_lines_file)
+
+    missing_coordinates = sorted(manifest_set - coordinate_ids, key=_camera_sort_key)
+    missing_thresholds = sorted(manifest_set - threshold_ids, key=_camera_sort_key)
+    missing_rois = sorted(manifest_set - roi_ids, key=_camera_sort_key)
+    missing_flow_lines = sorted(manifest_set - flow_line_ids, key=_camera_sort_key)
+
+    fully_configured = sorted(
+        manifest_set & coordinate_ids & threshold_ids & roi_ids & flow_line_ids,
+        key=_camera_sort_key,
+    )
+
+    queue_entries: list[dict[str, Any]] = []
+    for camera_id in sorted(manifest_set, key=_camera_sort_key):
+        missing: list[str] = []
+        if camera_id not in coordinate_ids:
+            missing.append("coordinates")
+        if camera_id not in threshold_ids:
+            missing.append("thresholds")
+        if camera_id not in roi_ids:
+            missing.append("rois")
+        if camera_id not in flow_line_ids:
+            missing.append("flow_lines")
+        if not missing:
+            continue
+        camera = manifest_by_id.get(camera_id, {})
+        queue_entries.append(
+            {
+                "camera_id": camera_id,
+                "name": camera.get("name"),
+                "district": camera.get("district"),
+                "sub_district": camera.get("sub_district"),
+                "missing": missing,
+                "missing_count": len(missing),
+            }
+        )
+
+    queue_entries.sort(
+        key=lambda entry: (
+            entry["missing_count"],
+            _camera_sort_key(str(entry["camera_id"])),
+        )
+    )
+    queue_limit = max(1, int(args.queue_limit))
+
+    return {
+        "manifest_file": str(args.manifest_file),
+        "camera_count": len(manifest_camera_ids),
+        "fully_configured_count": len(fully_configured),
+        "fully_configured_camera_ids": fully_configured,
+        "missing_counts": {
+            "coordinates": len(missing_coordinates),
+            "thresholds": len(missing_thresholds),
+            "rois": len(missing_rois),
+            "flow_lines": len(missing_flow_lines),
+        },
+        "missing_camera_ids": {
+            "coordinates": missing_coordinates,
+            "thresholds": missing_thresholds,
+            "rois": missing_rois,
+            "flow_lines": missing_flow_lines,
+        },
+        "next_calibration_queue": queue_entries[:queue_limit],
+        "config_files": {
+            "coordinates": str(args.coordinates_file),
+            "thresholds": str(args.thresholds_file),
+            "rois": str(args.rois_file),
+            "flow_lines": str(args.flow_lines_file),
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create a CLI parser for the supported prototype workflows."""
     parser = argparse.ArgumentParser(description="Traffic cam ingestion and analysis pipeline")
@@ -75,6 +212,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_loop.add_argument("--interval", type=float, default=settings.capture_interval_seconds)
     run_loop.add_argument("--max-cycles", type=int, default=settings.capture_max_cycles)
     run_loop.add_argument("--pretty", action="store_true")
+
+    audit_config = subparsers.add_parser(
+        "audit-config",
+        help="Report which manifest cameras still need coordinates, ROI, flow lines, or thresholds",
+    )
+    audit_config.add_argument("--manifest-file", default="data/manifest.json")
+    audit_config.add_argument("--coordinates-file", default="config/camera_coordinates.json")
+    audit_config.add_argument("--thresholds-file", default=settings.camera_density_thresholds_path)
+    audit_config.add_argument("--rois-file", default=settings.roi_config_path)
+    audit_config.add_argument("--flow-lines-file", default=settings.flow_line_config_path)
+    audit_config.add_argument("--report-file", default=None)
+    audit_config.add_argument("--queue-limit", type=int, default=20)
+    audit_config.add_argument("--pretty", action="store_true")
 
     serve = subparsers.add_parser("serve", help="Run the FastAPI web/API server")
     serve.add_argument("--host", default=settings.api_host)
@@ -129,6 +279,14 @@ def _dispatch_run(args: argparse.Namespace, *, interval: float, max_cycles: int 
     return 0
 
 
+def _dispatch_audit_config(args: argparse.Namespace) -> int:
+    report = _build_config_audit(args)
+    if args.report_file:
+        _write_json(args.report_file, report, pretty=args.pretty)
+    _print_json(report, pretty=args.pretty)
+    return 0
+
+
 def _dispatch_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -154,6 +312,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch_run(args, interval=0.0, max_cycles=1)
     if args.command == "run-loop":
         return _dispatch_run(args, interval=args.interval, max_cycles=args.max_cycles)
+    if args.command == "audit-config":
+        return _dispatch_audit_config(args)
     if args.command == "serve":
         return _dispatch_serve(args)
 

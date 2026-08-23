@@ -109,6 +109,97 @@ def test_run_loop_passes_interval_and_cycles(monkeypatch, capsys) -> None:
     assert recorded == {"interval": 15.0, "max_cycles": 4}
 
 
+def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "cameras": [
+                    {"cam_id": "49", "name": "Camera 49", "district": "A", "sub_district": "A1"},
+                    {"cam_id": "50", "name": "Camera 50", "district": "A", "sub_district": "A2"},
+                    {"cam_id": "59", "name": "Camera 59", "district": "B", "sub_district": "B1"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    coordinates_path = tmp_path / "camera_coordinates.json"
+    coordinates_path.write_text(
+        json.dumps({"cameras": {"49": {"latitude": 22.1, "longitude": 113.5}}}),
+        encoding="utf-8",
+    )
+    thresholds_path = tmp_path / "camera_density_thresholds.json"
+    thresholds_path.write_text(
+        json.dumps({"cameras": {"49": {"light": 4, "moderate": 10, "heavy": 16}, "50": {"light": 4, "moderate": 10, "heavy": 16}}}),
+        encoding="utf-8",
+    )
+    rois_path = tmp_path / "camera_rois.json"
+    rois_path.write_text(
+        json.dumps({"49": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}),
+        encoding="utf-8",
+    )
+    flow_lines_path = tmp_path / "camera_flow_lines.json"
+    flow_lines_path.write_text(
+        json.dumps({"50": {"start": [0.0, 0.5], "end": [1.0, 0.5]}}),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "audit.json"
+
+    result = cli.main(
+        [
+            "audit-config",
+            "--manifest-file",
+            str(manifest_path),
+            "--coordinates-file",
+            str(coordinates_path),
+            "--thresholds-file",
+            str(thresholds_path),
+            "--rois-file",
+            str(rois_path),
+            "--flow-lines-file",
+            str(flow_lines_path),
+            "--report-file",
+            str(report_path),
+            "--queue-limit",
+            "2",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["camera_count"] == 3
+    assert payload["fully_configured_count"] == 0
+    assert payload["missing_counts"] == {
+        "coordinates": 2,
+        "thresholds": 1,
+        "rois": 2,
+        "flow_lines": 2,
+    }
+    assert payload["missing_camera_ids"]["coordinates"] == ["50", "59"]
+    assert payload["missing_camera_ids"]["thresholds"] == ["59"]
+    assert payload["missing_camera_ids"]["rois"] == ["50", "59"]
+    assert payload["missing_camera_ids"]["flow_lines"] == ["49", "59"]
+    assert payload["next_calibration_queue"] == [
+        {
+            "camera_id": "49",
+            "name": "Camera 49",
+            "district": "A",
+            "sub_district": "A1",
+            "missing": ["flow_lines"],
+            "missing_count": 1,
+        },
+        {
+            "camera_id": "50",
+            "name": "Camera 50",
+            "district": "A",
+            "sub_district": "A2",
+            "missing": ["coordinates", "rois"],
+            "missing_count": 2,
+        },
+    ]
+    assert json.loads(report_path.read_text(encoding="utf-8")) == payload
+
+
 def test_serve_dispatches_to_uvicorn(monkeypatch) -> None:
     recorded = {}
 

@@ -27,6 +27,6 @@ ENV TRANSFORMERS_CACHE=/app/model-cache/huggingface
 ENV ULTRALYTICS_HOME=/app/model-cache/ultralytics
 ENV YOLO_CONFIG_DIR=/app/model-cache/ultralytics/config
 
-# Set entrypoint to the new package CLI
+# Run the dashboard API by default so the web app is reachable on port 8000.
 ENTRYPOINT ["python", "-m", "trafficcam.cli"]
-CMD ["--mode", "discover"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]

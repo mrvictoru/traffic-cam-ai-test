@@ -115,6 +115,10 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       font-size: 0.62rem; color: #fca5a5; background: rgba(220,38,38,0.15);
       border: 1px solid rgba(220,38,38,0.4); border-radius: 6px; padding: 1px 6px; margin-left: 6px;
     }
+    .approx-badge {
+      font-size: 0.62rem; color: #fde68a; background: rgba(202,138,4,0.18);
+      border: 1px solid rgba(202,138,4,0.45); border-radius: 6px; padding: 1px 6px; margin-left: 6px;
+    }
     #detail-panel {
       top: 0; right: 0; height: 100%; width: 380px; background: rgba(15,23,42,0.98);
       border-left: 1px solid rgba(148,163,184,0.25); padding: 18px; overflow-y: auto;
@@ -152,6 +156,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     <div id="toolbar">
       <span id="status">Loading…</span>
       <button class="btn" id="refresh-btn">⟳ Refresh</button>
+      <button class="btn" id="edit-mode-btn" type="button">✎ Edit positions</button>
       <label class="btn" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
         <input type="checkbox" id="auto-refresh" checked style="margin:0;"> Auto
       </label>
@@ -186,6 +191,7 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 let markers = [];
 let refreshTimer = null;
+let editModeEnabled = false;
 
 function densityColor(d) { return DENSITY_COLORS[(d || 'unknown').toLowerCase()] || DENSITY_COLORS.unknown; }
 function scoreColor(score) {
@@ -202,6 +208,17 @@ function minutesAgo(iso) {
   return Math.max(0, Math.round((Date.now() - t) / 60000));
 }
 function staleMinutes(iso) { const m = minutesAgo(iso); return m != null && m > 20; }
+function hasApproximatePosition(cam) {
+  return ((cam.map_position || {}).source || 'approximate') !== 'coordinates';
+}
+function approximateCameraCount() {
+  return CAMERAS.filter(hasApproximatePosition).length;
+}
+function setStatus(message) {
+  const approximate = approximateCameraCount();
+  const suffix = approximate ? ` · ${approximate} approximate` : '';
+  document.getElementById('status').textContent = `${message}${suffix}`;
+}
 
 function buildLegend() {
   document.getElementById('legend').innerHTML =
@@ -242,9 +259,10 @@ function renderList() {
     const m = minutesAgo(cam.latest_captured_at);
     const stale = staleMinutes(cam.latest_captured_at)
       ? `<span class="stale-badge">stale${m != null ? ' · ' + m + 'm' : ''}</span>` : '';
+    const approx = hasApproximatePosition(cam) ? '<span class="approx-badge">needs placement</span>' : '';
     return `<div class="cam-row" onclick="openDetail('${cam.camera_id}')">
       <span class="dot" style="background:${color}"></span>
-      <div><div class="name">${cam.name || 'Camera ' + cam.camera_id}${stale}</div>
+      <div><div class="name">${cam.name || 'Camera ' + cam.camera_id}${stale}${approx}</div>
         <div class="sub">${[cam.district, cam.sub_district].filter(Boolean).join(' · ') || 'Location pending'}</div></div>
       <span class="score-pill" style="background:${color}">${score != null ? Math.round(score) : '—'}</span>
     </div>`;
@@ -252,6 +270,32 @@ function renderList() {
 }
 
 function clearMarkers() { markers.forEach(m => map.removeLayer(m)); markers = []; }
+
+async function saveCameraPosition(cameraId, latitude, longitude) {
+  try {
+    const response = await fetch(`/api/cameras/${encodeURIComponent(cameraId)}/position`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latitude, longitude })
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || 'Failed to save camera position');
+    }
+    const target = CAMERAS.find(cam => String(cam.camera_id) === String(cameraId));
+    if (target) {
+      target.latitude = payload.latitude;
+      target.longitude = payload.longitude;
+      target.map_position = payload.map_position;
+    }
+    setStatus(`Saved ${cameraId}`);
+    refresh();
+    return payload;
+  } catch (error) {
+    setStatus(error.message || 'Save failed');
+    throw error;
+  }
+}
 
 function addMarkers(cameras) {
   clearMarkers();
@@ -270,8 +314,16 @@ function addMarkers(cameras) {
         </div>`,
       iconSize: [34, 32], iconAnchor: [17, 14]
     });
-    const marker = L.marker([lat, lon], { icon }).addTo(map);
-    marker.on('click', () => openDetail(cam.camera_id));
+    const marker = L.marker([lat, lon], { icon, draggable: editModeEnabled }).addTo(map);
+    marker.on('click', () => {
+      if (!editModeEnabled) openDetail(cam.camera_id);
+    });
+    if (editModeEnabled) {
+      marker.on('dragend', async function () {
+        const ll = marker.getLatLng();
+        await saveCameraPosition(cam.camera_id, ll.lat, ll.lng);
+      });
+    }
     markers.push(marker);
   });
 }
@@ -300,13 +352,18 @@ async function openDetail(id) {
   content.innerHTML = '<p class="muted">Loading…</p>';
   try {
     const [detail, history] = await Promise.all([
-      fetch(`/api/cameras/${encodeURIComponent(id)}`).then(r => r.json()),
+      fetch(`/api/cameras/${encodeURIComponent(id)}`).then(async r => {
+        const payload = await r.json();
+        if (!r.ok) throw new Error(payload.detail || `Failed to load camera ${id}`);
+        return payload;
+      }),
       fetch(`/api/cameras/${encodeURIComponent(id)}/history?limit=24`).then(r => r.ok ? r.json() : [])
     ]);
     const color = densityColor(detail.density);
+    const approximate = ((detail.map_position || {}).source || 'approximate') !== 'coordinates';
     const imageSection = detail.latest_image_url
       ? `<div class="section"><h3>Latest frame</h3><img class="frame-preview" src="${detail.latest_image_url}"></div>`
-      : '<div class="section"><h3>Latest frame</h3><p class="muted">No saved frame available.</p></div>';
+      : `<div class="section"><h3>Latest frame</h3><p class="muted">${detail.captured_at ? 'No saved frame available.' : 'Waiting for the first capture and analysis cycle for this camera.'}</p></div>`;
     // Crossings are per-burst observations — hide the section when zero.
     const split = detail.flow_rate_vph || {};
     const tot = (split.in || 0) + (split.out || 0);
@@ -317,9 +374,10 @@ async function openDetail(id) {
       : '';
     content.innerHTML = `
       <h2>${detail.name || 'Camera ' + detail.camera_id}</h2>
-      <p class="sub">ID ${detail.camera_id} · ${[detail.district, detail.sub_district].filter(Boolean).join(' · ') || 'Location pending'}</p>
+      <p class="sub">ID ${detail.camera_id} · ${[detail.district, detail.sub_district].filter(Boolean).join(' · ') || 'Location pending'}${approximate ? ' · approximate placement' : ''}</p>
       <span class="density-badge" style="background:${color}">${(detail.density || 'unknown').toUpperCase()}</span>
       <span style="margin-left:8px;font-weight:700;">Score ${detail.congestion_score != null ? detail.congestion_score : '—'}/100</span>
+      ${approximate ? '<span class="approx-badge">drag in edit mode to place</span>' : ''}
       ${imageSection}
       <div class="stat-grid">
         <div class="stat"><div class="k">Vehicles (mean)</div><div class="v">${detail.vehicle_count ?? '—'}</div></div>
@@ -333,7 +391,7 @@ async function openDetail(id) {
       ${detail.stream_url ? `<div class="section"><h3>Stream</h3><span class="stream-link">${detail.stream_url}</span></div>` : ''}
     `;
   } catch (e) {
-    content.innerHTML = `<p class="muted">Failed to load detail for camera ${id}.</p>`;
+    content.innerHTML = `<p class="muted">${e.message || `Failed to load detail for camera ${id}.`}</p>`;
   }
 }
 window.openDetail = openDetail;
@@ -348,9 +406,9 @@ async function refresh() {
     let overview = null;
     try { overview = await fetch('/api/overview').then(r => r.json()); } catch (_) {}
     renderCards(overview);
-    status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    setStatus('Updated ' + new Date().toLocaleTimeString());
   } catch (e) {
-    status.textContent = 'Refresh failed';
+    setStatus('Refresh failed');
   }
 }
 
@@ -363,12 +421,24 @@ document.getElementById('refresh-btn').addEventListener('click', refresh);
 document.getElementById('close-panel').addEventListener('click', () => document.getElementById('detail-panel').classList.remove('open'));
 document.getElementById('auto-refresh').addEventListener('change', setupAutoRefresh);
 document.getElementById('search').addEventListener('input', renderList);
+document.getElementById('edit-mode-btn').addEventListener('click', () => {
+  editModeEnabled = !editModeEnabled;
+  document.getElementById('edit-mode-btn').textContent = editModeEnabled ? '✓ Editing' : '✎ Edit positions';
+  document.getElementById('auto-refresh').checked = !editModeEnabled;
+  if (editModeEnabled) {
+    setStatus('Drag a marker to reposition it');
+  } else {
+    setStatus('Editing off');
+  }
+  setupAutoRefresh();
+  addMarkers(CAMERAS);
+});
 
 buildLegend();
 renderCards(INITIAL.overview);
 addMarkers(CAMERAS);
 renderList();
-document.getElementById('status').textContent = 'Loaded ' + CAMERAS.length + ' cameras';
+setStatus('Loaded ' + CAMERAS.length + ' cameras');
 setupAutoRefresh();
 </script>
 </body>

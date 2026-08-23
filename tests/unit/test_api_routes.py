@@ -104,6 +104,8 @@ def test_list_cameras_includes_manifest_only_cameras(tmp_path: Path, monkeypatch
     assert cameras[0]["name"] == "New Discovery"
     assert cameras[0]["latest_density"] == "unknown"
     assert cameras[0]["map_position"]["source"] == "approximate"
+    assert cameras[0]["latitude"] is not None
+    assert cameras[0]["longitude"] is not None
 
 
 def test_get_camera_returns_latest_detail(tmp_path: Path) -> None:
@@ -155,6 +157,8 @@ def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: py
     assert detail["latest_image_url"] is None
     assert detail["per_frame"] == []
     assert detail["map_position"]["source"] == "approximate"
+    assert detail["map_position"]["latitude"] is not None
+    assert detail["map_position"]["longitude"] is not None
 
 
 def test_get_camera_cache_busts_frame_urls(tmp_path: Path) -> None:

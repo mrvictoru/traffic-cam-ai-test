@@ -5,6 +5,10 @@ services:
       - "8000:8000"
     environment:
       PIPELINE_AUTOSTART: "1"
+      PIPELINE_MANIFEST_FILE: ${PIPELINE_MANIFEST_FILE:-data/manifest.json}
+      PIPELINE_OUTPUT_DIR: ${PIPELINE_OUTPUT_DIR:-output/live}
+      PIPELINE_DATA_DIR: ${PIPELINE_DATA_DIR:-data}
+      PIPELINE_LIMIT: ${PIPELINE_LIMIT:-30}
       MODEL_CACHE_DIR: /app/model-cache
       HF_HOME: /app/model-cache/huggingface
       TRANSFORMERS_CACHE: /app/model-cache/huggingface

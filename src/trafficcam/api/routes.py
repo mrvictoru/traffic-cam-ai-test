@@ -240,6 +240,22 @@ def _map_position_from_coordinates(latitude: float, longitude: float) -> dict[st
     }
 
 
+def _coordinates_from_map_percent(x_percent: float, y_percent: float) -> tuple[float, float]:
+    """Project percentage-based fallback map positions back into lat/lon.
+
+    Leaflet markers need real coordinates. Approximate markers still derive
+    from district anchors and jitter, but they must be expressed as Macau
+    lat/lon so they can be rendered on the geographic map.
+    """
+    lat_min = _MACAU_MAP_BOUNDS["lat_min"]
+    lat_max = _MACAU_MAP_BOUNDS["lat_max"]
+    lon_min = _MACAU_MAP_BOUNDS["lon_min"]
+    lon_max = _MACAU_MAP_BOUNDS["lon_max"]
+    longitude = lon_min + ((x_percent / 100.0) * (lon_max - lon_min))
+    latitude = lat_min + (((100.0 - y_percent) / 100.0) * (lat_max - lat_min))
+    return round(latitude, 6), round(longitude, 6)
+
+
 def _approximate_map_position(camera_id: str, district: str | None, sub_district: str | None) -> dict[str, Any]:
     """Build a deterministic fallback map position when camera coordinates are missing.
 
@@ -255,10 +271,15 @@ def _approximate_map_position(camera_id: str, district: str | None, sub_district
     ).digest()
     x_jitter = ((digest[0] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE
     y_jitter = ((digest[1] / _HASH_BYTE_MAX) - _HASH_CENTER_OFFSET) * _APPROXIMATE_JITTER_RANGE
+    x_percent = round(_clamp(anchor_x + x_jitter, 6.0, 94.0), 1)
+    y_percent = round(_clamp(anchor_y + y_jitter, 6.0, 94.0), 1)
+    latitude, longitude = _coordinates_from_map_percent(x_percent, y_percent)
     return {
-        "x_percent": round(_clamp(anchor_x + x_jitter, 6.0, 94.0), 1),
-        "y_percent": round(_clamp(anchor_y + y_jitter, 6.0, 94.0), 1),
+        "x_percent": x_percent,
+        "y_percent": y_percent,
         "source": "approximate",
+        "latitude": latitude,
+        "longitude": longitude,
     }
 
 

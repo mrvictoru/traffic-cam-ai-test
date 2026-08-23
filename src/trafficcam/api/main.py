@@ -16,20 +16,41 @@ from trafficcam.api.routes import router
 from trafficcam.web.map_page import render_map_page
 
 
+def _autostart_enabled() -> bool:
+    return os.getenv("PIPELINE_AUTOSTART", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _autostart_limit() -> int | None:
+    raw_value = os.getenv("PIPELINE_LIMIT", "").strip()
+    if not raw_value:
+        return None
+    try:
+        limit = int(raw_value)
+    except ValueError:
+        return None
+    return limit if limit > 0 else None
+
+
+def _live_loop_kwargs() -> dict[str, object]:
+    return {
+        "manifest_file": os.getenv("PIPELINE_MANIFEST_FILE", "data/manifest.json"),
+        "output_dir": os.getenv("PIPELINE_OUTPUT_DIR", "output/live"),
+        "data_dir": os.getenv("PIPELINE_DATA_DIR", "data"),
+        "frame_count": 1,
+        "limit": _autostart_limit(),
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the live capture loop alongside the dashboard when enabled."""
-    if os.getenv("PIPELINE_AUTOSTART", "0").strip().lower() in {"1", "true", "yes", "on"}:
+    if _autostart_enabled():
         def _live_loop() -> None:
             from trafficcam.config import settings
             from trafficcam.pipeline import run_pipeline
 
             run_pipeline(
-                manifest_file="data/manifest.json",
-                output_dir="output/live",
-                data_dir="data",
-                frame_count=1,
-                limit=None,
+                **_live_loop_kwargs(),
                 interval=settings.capture_interval_seconds,
                 max_cycles=None,
             )

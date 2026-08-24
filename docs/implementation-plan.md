@@ -444,18 +444,19 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ## 9. Current project checklist
 
-Status as of 2026-08-23:
+Status as of 2026-08-24:
 
 - [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
 - [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
 - [x] per-camera motion calibration and free-flow baselines are implemented in `tools/calibrate_freeflow.py` and `src/trafficcam/vision/speed_estimator.py`
 - [x] time-of-day and hour-of-week baseline adjustments are implemented in `src/trafficcam/analysis/temporal.py`
 - [x] the run-once pipeline in `scripts/run_e2e_pipeline.py` now emits speed-aware congestion and temporal adjustment metadata
-- [x] focused validation passed for speed estimation, free-flow calibration, temporal scoring, and detector regression checks
-- [ ] populate live calibration values from actual sustained motion history once more data is collected
-- [ ] complete corridor/road-segment aggregation for a true map-layer style overlay
-- [ ] continue the API/UI polish and richer dashboard integration for drill-down views
-- [ ] add more end-to-end coverage around live camera coordinates and map rendering
+- [x] focused validation covered detector regression, speed estimation, free-flow calibration, and temporal scoring checks
+- [x] the dashboard work is in active progress on the current branch, with map and route-level view development alongside the traffic scoring updates
+- [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
+- [ ] complete corridor / road-segment aggregation for a true map-layer style overlay
+- [ ] continue the API/UI polish and richer dashboard integration for drill-down and camera detail views
+- [ ] add more end-to-end coverage around live camera coordinates, map rendering, and UI response flows
 
 ## 10. Current progress tracker
 
@@ -471,19 +472,23 @@ This repo already includes the following completed work:
 - [x] utility scripts placed in `tools/` for live site probing and page inspection
 - [x] Docker support updated to include the new package layout and dependencies
 - [x] README updated to document the current state and live probe workflow
+- [x] analytical scoring, time-of-day baselines, and speed-aware calibration work are now part of the main pipeline and validation flow
+- [x] the live dashboard branch is actively working on map visualization and camera list features as the next layer of the UI
 
 Work still to do:
 
 - [x] implement the analysis pipeline in `src/trafficcam/analysis/`
 - [x] implement speed-based traffic scoring and motion-aware congestion estimation (see `src/trafficcam/vision/speed_estimator.py`; blended via `DensityScorer.score(speed_component=...)`, wired into `scripts/run_e2e_pipeline.py`)
 - [x] add time-of-day baselines for traffic severity (implemented in `src/trafficcam/analysis/temporal.py`; applied to main scoring in `scripts/run_e2e_pipeline.py`)
-- [ ] complete per-camera calibration rollout for traffic severity (free-flow calibration tool added in `tools/calibrate_freeflow.py`; live data still needs to accumulate motion history before config can be populated)
+- [ ] complete per-camera calibration rollout for traffic severity using sustained live motion history
 - [ ] implement storage persistence beyond simple JSON storage
-- [ ] build the API routing and connect it to the persisted results
-- [ ] add a basic web dashboard in `src/trafficcam/web/`
+- [ ] finish API routing and connect it to the persisted results and dashboard data model
+- [ ] complete the basic web dashboard and map overlays in `src/trafficcam/web/`
 - [ ] add road-segment / corridor overlays to approximate a Google Maps traffic layer
 - [ ] add richer integration tests for API and UI behavior
 - [ ] refine the capture retry policy and error handling
+
+The project is now past the initial prototype stage. The main work remaining is operationalizing the calibrated scoring model into a more polished map/dashboard experience, with live calibration and corridor aggregation as the most important follow-ups before a production-like traffic layer is ready.
 
 ---
 

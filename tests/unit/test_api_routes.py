@@ -19,6 +19,11 @@ def _isolate_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     missing = tmp_path / "missing-manifest.json"
     monkeypatch.setenv("CAMERA_MANIFEST_PATH", str(missing))
+    monkeypatch.setenv("CAMERA_COORDS_PATH", str(tmp_path / "missing-coordinates.json"))
+    monkeypatch.setenv(
+        "CAMERA_SPEED_CALIBRATION_PATH",
+        str(tmp_path / "missing-speed-calibration.json"),
+    )
 
 
 def _seed_analysis(store: JsonStore, camera_id: str = "cam1") -> None:
@@ -65,13 +70,27 @@ def test_api_routes_import_and_list_cameras(tmp_path: Path) -> None:
 def test_list_cameras_exposes_flow_split_and_coordinates(tmp_path: Path) -> None:
     store = JsonStore(tmp_path)
     _seed_analysis(store)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "camera_speed_calibration.json").write_text(
+        json.dumps({"cameras": {"cam1": {"freeflow_px_per_frame": 12.5, "sample_count": 7, "offpeak_hours": "02-05"}}}),
+        encoding="utf-8",
+    )
 
-    module = reload(routes)
-    cameras = module.list_cameras(store=store)
+    with pytest.MonkeyPatch.context() as local_patch:
+        local_patch.chdir(tmp_path)
+        module = reload(routes)
+        cameras = module.list_cameras(store=store)
 
-    assert cameras[0]["latest_flow_split"] == {"northbound": 5, "southbound": 6, "total": 11}
-    assert cameras[0]["latitude"] == 22.195
-    assert cameras[0]["longitude"] == 113.558
+        assert cameras[0]["latest_flow_split"] == {"northbound": 5, "southbound": 6, "total": 11}
+        assert cameras[0]["latitude"] == 22.195
+        assert cameras[0]["longitude"] == 113.558
+        assert cameras[0]["calibration"] == {
+            "status": "calibrated",
+            "is_calibrated": True,
+            "freeflow_px_per_frame": 12.5,
+            "sample_count": 7,
+            "offpeak_hours": "02-05",
+        }
 
 
 def test_list_cameras_includes_manifest_only_cameras(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,17 +130,31 @@ def test_list_cameras_includes_manifest_only_cameras(tmp_path: Path, monkeypatch
 def test_get_camera_returns_latest_detail(tmp_path: Path) -> None:
     store = JsonStore(tmp_path)
     _seed_analysis(store)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "camera_speed_calibration.json").write_text(
+        json.dumps({"cameras": {"cam1": {"freeflow_px_per_frame": 12.5, "sample_count": 7, "offpeak_hours": "02-05"}}}),
+        encoding="utf-8",
+    )
 
-    module = reload(routes)
-    detail = module.get_camera("cam1", store=store)
+    with pytest.MonkeyPatch.context() as local_patch:
+        local_patch.chdir(tmp_path)
+        module = reload(routes)
+        detail = module.get_camera("cam1", store=store)
 
-    assert detail["camera_id"] == "cam1"
-    assert detail["density"] == "heavy"
-    assert detail["vehicle_count"] == 42
-    assert detail["stream_url"] == "https://example/stream.m3u8"
-    assert detail["flow_rate_vph"]["total"] == 11
-    assert detail["per_frame"][0]["vehicle_count"] == 42
-    assert detail["map_position"]["source"] == "coordinates"
+        assert detail["camera_id"] == "cam1"
+        assert detail["density"] == "heavy"
+        assert detail["vehicle_count"] == 42
+        assert detail["stream_url"] == "https://example/stream.m3u8"
+        assert detail["flow_rate_vph"]["total"] == 11
+        assert detail["per_frame"][0]["vehicle_count"] == 42
+        assert detail["map_position"]["source"] == "coordinates"
+        assert detail["calibration"] == {
+            "status": "calibrated",
+            "is_calibrated": True,
+            "freeflow_px_per_frame": 12.5,
+            "sample_count": 7,
+            "offpeak_hours": "02-05",
+        }
 
 
 def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,6 +192,13 @@ def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: py
     assert detail["map_position"]["source"] == "approximate"
     assert detail["map_position"]["latitude"] is not None
     assert detail["map_position"]["longitude"] is not None
+    assert detail["calibration"] == {
+        "status": "uncalibrated",
+        "is_calibrated": False,
+        "freeflow_px_per_frame": None,
+        "sample_count": None,
+        "offpeak_hours": None,
+    }
 
 
 def test_get_camera_cache_busts_frame_urls(tmp_path: Path) -> None:

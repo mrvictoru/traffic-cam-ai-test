@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from trafficcam.calibration import calibrate, summarize_calibration_coverage
 from trafficcam.config import settings
 from trafficcam.capture.frame_capturer import FrameCapturer
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
@@ -90,11 +91,13 @@ def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
 
     coordinate_ids = _load_coordinate_ids(args.coordinates_file)
     threshold_ids = _load_threshold_ids(args.thresholds_file)
+    speed_calibration_ids = _load_threshold_ids(args.calibration_file)
     roi_ids = _load_plain_object_ids(args.rois_file)
     flow_line_ids = _load_plain_object_ids(args.flow_lines_file)
 
     missing_coordinates = sorted(manifest_set - coordinate_ids, key=_camera_sort_key)
     missing_thresholds = sorted(manifest_set - threshold_ids, key=_camera_sort_key)
+    missing_speed_calibrations = sorted(manifest_set - speed_calibration_ids, key=_camera_sort_key)
     missing_rois = sorted(manifest_set - roi_ids, key=_camera_sort_key)
     missing_flow_lines = sorted(manifest_set - flow_line_ids, key=_camera_sort_key)
 
@@ -135,28 +138,41 @@ def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     queue_limit = max(1, int(args.queue_limit))
+    calibration_coverage = summarize_calibration_coverage(
+        manifest_camera_ids,
+        Path(args.data_dir),
+        Path(args.calibration_file),
+        min_history=int(args.calibration_min_history),
+        offpeak_start=int(args.calibration_offpeak_start),
+        offpeak_end=int(args.calibration_offpeak_end),
+    )
 
     return {
         "manifest_file": str(args.manifest_file),
+        "data_dir": str(args.data_dir),
         "camera_count": len(manifest_camera_ids),
         "fully_configured_count": len(fully_configured),
         "fully_configured_camera_ids": fully_configured,
         "missing_counts": {
             "coordinates": len(missing_coordinates),
             "thresholds": len(missing_thresholds),
+            "speed_calibration": len(missing_speed_calibrations),
             "rois": len(missing_rois),
             "flow_lines": len(missing_flow_lines),
         },
         "missing_camera_ids": {
             "coordinates": missing_coordinates,
             "thresholds": missing_thresholds,
+            "speed_calibration": missing_speed_calibrations,
             "rois": missing_rois,
             "flow_lines": missing_flow_lines,
         },
         "next_calibration_queue": queue_entries[:queue_limit],
+        "speed_calibration": calibration_coverage,
         "config_files": {
             "coordinates": str(args.coordinates_file),
             "thresholds": str(args.thresholds_file),
+            "speed_calibration": str(args.calibration_file),
             "rois": str(args.rois_file),
             "flow_lines": str(args.flow_lines_file),
         },
@@ -218,13 +234,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report which manifest cameras still need coordinates, ROI, flow lines, or thresholds",
     )
     audit_config.add_argument("--manifest-file", default="data/manifest.json")
+    audit_config.add_argument("--data-dir", default="data")
     audit_config.add_argument("--coordinates-file", default="config/camera_coordinates.json")
     audit_config.add_argument("--thresholds-file", default=settings.camera_density_thresholds_path)
+    audit_config.add_argument("--calibration-file", default=settings.camera_speed_calibration_path)
+    audit_config.add_argument("--calibration-min-history", type=int, default=5)
+    audit_config.add_argument("--calibration-offpeak-start", type=int, default=2)
+    audit_config.add_argument("--calibration-offpeak-end", type=int, default=5)
     audit_config.add_argument("--rois-file", default=settings.roi_config_path)
     audit_config.add_argument("--flow-lines-file", default=settings.flow_line_config_path)
     audit_config.add_argument("--report-file", default=None)
     audit_config.add_argument("--queue-limit", type=int, default=20)
     audit_config.add_argument("--pretty", action="store_true")
+
+    calibrate_freeflow = subparsers.add_parser(
+        "calibrate-freeflow",
+        help="Backfill per-camera free-flow speed calibration from persisted analysis history",
+    )
+    calibrate_freeflow.add_argument("--data-dir", default="data")
+    calibrate_freeflow.add_argument("--config", default=settings.camera_speed_calibration_path)
+    calibrate_freeflow.add_argument("--min-history", type=int, default=5)
+    calibrate_freeflow.add_argument("--offpeak-start", type=int, default=2)
+    calibrate_freeflow.add_argument("--offpeak-end", type=int, default=5)
+    calibrate_freeflow.add_argument("--dry-run", action="store_true")
+    calibrate_freeflow.add_argument("--pretty", action="store_true")
 
     serve = subparsers.add_parser("serve", help="Run the FastAPI web/API server")
     serve.add_argument("--host", default=settings.api_host)
@@ -287,6 +320,26 @@ def _dispatch_audit_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dispatch_calibrate_freeflow(args: argparse.Namespace) -> int:
+    result = calibrate(
+        Path(args.data_dir),
+        Path(args.config),
+        min_history=args.min_history,
+        dry_run=args.dry_run,
+        offpeak_start=args.offpeak_start,
+        offpeak_end=args.offpeak_end,
+    )
+    payload = {
+        "data_dir": str(args.data_dir),
+        "config": str(args.config),
+        "dry_run": bool(args.dry_run),
+        "camera_count": len(result),
+        "cameras": result,
+    }
+    _print_json(payload, pretty=args.pretty)
+    return 0
+
+
 def _dispatch_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -314,6 +367,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch_run(args, interval=args.interval, max_cycles=args.max_cycles)
     if args.command == "audit-config":
         return _dispatch_audit_config(args)
+    if args.command == "calibrate-freeflow":
+        return _dispatch_calibrate_freeflow(args)
     if args.command == "serve":
         return _dispatch_serve(args)
 

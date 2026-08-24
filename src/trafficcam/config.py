@@ -68,6 +68,10 @@ class Settings:
         "CAMERA_DENSITY_THRESHOLDS_PATH",
         "config/camera_density_thresholds.json",
     )
+    camera_speed_calibration_path: str = os.getenv(
+        "CAMERA_SPEED_CALIBRATION_PATH",
+        "config/camera_speed_calibration.json",
+    )
     night_heavy_min_confidence: float = float(os.getenv("NIGHT_HEAVY_MIN_CONFIDENCE", "0.4"))
     night_blocked_min_confidence: float = float(os.getenv("NIGHT_BLOCKED_MIN_CONFIDENCE", "0.5"))
     night_density_downgrade_steps: int = int(os.getenv("NIGHT_DENSITY_DOWNGRADE_STEPS", "1"))

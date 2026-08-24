@@ -16,6 +16,7 @@ import os
 import statistics
 from pathlib import Path
 
+from trafficcam.calibration import load_camera_calibrations
 from trafficcam.config import settings
 
 # Track histories are lists of (track_id, frame_idx, (cx, cy)) tuples.
@@ -28,7 +29,7 @@ STATIONARY_SPEED_PX_PER_FRAME = float(os.getenv("SPEED_STATIONARY_PX", "1.0"))
 # Free-flow calibration file mapping camera_id -> free-flow px-per-frame.
 SPEED_CALIBRATION_PATH = os.getenv(
     "CAMERA_SPEED_CALIBRATION_PATH",
-    str(Path("config") / "camera_speed_calibration.json"),
+    settings.camera_speed_calibration_path,
 )
 
 _CALIBRATION_CACHE: dict[str, float] | None = None
@@ -105,24 +106,13 @@ def _load_freeflow_calibration(path: str | Path | None = None) -> dict[str, floa
     if _CALIBRATION_CACHE is not None and _CALIBRATION_CACHE_KEY == cache_key:
         return _CALIBRATION_CACHE
 
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        _CALIBRATION_CACHE = {}
-        _CALIBRATION_CACHE_KEY = cache_key
-        return {}
-
-    entries = payload.get("cameras") if isinstance(payload, dict) else None
     parsed: dict[str, float] = {}
-    if isinstance(entries, dict):
-        for camera_id, entry in entries.items():
-            value = entry.get("freeflow_px_per_frame") if isinstance(entry, dict) else entry
-            try:
-                value = float(value)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                continue
-            if value > 0:
-                parsed[str(camera_id)] = value
+    for camera_id, entry in load_camera_calibrations(target).items():
+        value = entry.get("freeflow_px_per_frame")
+        try:
+            parsed[str(camera_id)] = float(value)
+        except (TypeError, ValueError):
+            continue
 
     _CALIBRATION_CACHE = parsed
     _CALIBRATION_CACHE_KEY = cache_key

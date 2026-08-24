@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from trafficcam.calibration import load_camera_calibrations
 from trafficcam.storage.json_store import JsonStore
 
 router = APIRouter()
@@ -321,6 +322,29 @@ def _resolve_density(analysis: dict[str, Any], details: dict[str, Any]) -> str:
     return str(details.get("density") or analysis.get("label") or "unknown")
 
 
+def _calibration_status(camera_id: str, calibrations: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    entry = calibrations.get(str(camera_id)) or {}
+    freeflow = entry.get("freeflow_px_per_frame")
+    if not isinstance(freeflow, (int, float)):
+        return {
+            "status": "uncalibrated",
+            "is_calibrated": False,
+            "freeflow_px_per_frame": None,
+            "sample_count": None,
+            "offpeak_hours": None,
+        }
+    sample_count = entry.get("sample_count")
+    if isinstance(sample_count, float) and sample_count.is_integer():
+        sample_count = int(sample_count)
+    return {
+        "status": "calibrated",
+        "is_calibrated": True,
+        "freeflow_px_per_frame": float(freeflow),
+        "sample_count": sample_count if isinstance(sample_count, int) else None,
+        "offpeak_hours": str(entry.get("offpeak_hours")) if entry.get("offpeak_hours") else None,
+    }
+
+
 _MANIFEST_PATH = Path(os.getenv("CAMERA_MANIFEST_PATH", "data/manifest.json"))
 
 
@@ -352,6 +376,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
         store = JsonStore("data")
 
     coordinates = _load_camera_coordinates()
+    calibrations = load_camera_calibrations()
     analyses = _load_analyses(store)
     # Seed grouped entries from the manifest first. Analysis records below
     # enrich these entries; cameras without any history stay visible.
@@ -378,6 +403,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             "longitude": None,
             "density_rank": _DENSITY_PRIORITY["unknown"],
             "map_position": None,
+            "calibration": _calibration_status(cam_id, calibrations),
         }
     for analysis in analyses:
         camera_id = analysis.get("camera_id") or "unknown"
@@ -404,6 +430,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 "longitude": None,
                 "density_rank": _DENSITY_PRIORITY["unknown"],
                 "map_position": None,
+                "calibration": _calibration_status(camera_id, calibrations),
             },
         )
         if not existing.get("name"):
@@ -535,6 +562,7 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
             "latest_image_url": None,
             "per_frame": [],
             "map_position": map_position,
+            "calibration": _calibration_status(camera_id, load_camera_calibrations()),
         }
 
     details = record.get("details") or {}
@@ -555,6 +583,7 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         capture_result,
         coordinates,
     )
+    calibration = _calibration_status(camera_id, load_camera_calibrations())
     return {
         "camera_id": camera_id,
         "captured_at": record.get("captured_at"),
@@ -586,6 +615,7 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         "latest_image_url": latest_frame.get("display_image_url"),
         "per_frame": per_frame,
         "map_position": map_position,
+        "calibration": calibration,
     }
 
 

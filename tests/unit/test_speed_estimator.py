@@ -98,6 +98,14 @@ class TestFreeflowCalibration:
         assert freeflow_for_camera("49", path=config) == pytest.approx(12.5)
         assert freeflow_for_camera("999", path=config) is None
 
+    def test_reads_legacy_numeric_entries(self, tmp_path) -> None:
+        config = tmp_path / "calibration.json"
+        config.write_text(
+            json.dumps({"cameras": {"49": 12.5}}),
+            encoding="utf-8",
+        )
+        assert freeflow_for_camera("49", path=config) == pytest.approx(12.5)
+
     def test_missing_file_returns_empty(self, tmp_path) -> None:
         assert freeflow_for_camera("49", path=tmp_path / "missing.json") is None
 

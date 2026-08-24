@@ -330,6 +330,25 @@ def _analyze_burst(
     density_counts: dict[str, int] = {}
     for r in per_frame_results:
         density_counts[r["density"]] = density_counts.get(r["density"], 0) + 1
+    raw_density = max(density_counts, key=density_counts.get) if density_counts else "unknown"
+    # Speed-based congestion component: median tracked displacement vs the
+    # camera's calibrated free-flow reference. When no calibration or no
+    # motion data exists, the score falls back to occupancy-only blending.
+    median_speed = median_track_speed(tracker.track_histories)
+    freeflow = freeflow_for_camera(camera_id)
+    speed_ratio: float | None = None
+    speed_component: float | None = None
+    if median_speed is not None and freeflow:
+        speed_ratio = round(median_speed / freeflow, 4)
+        speed_component = speed_score_from_ratio(speed_ratio)
+        LOGGER.info(
+            "Speed estimate for %s: median=%.2f px/frame, freeflow=%.2f, ratio=%.2f -> score=%s",
+            camera_id,
+            median_speed,
+            freeflow,
+            speed_ratio,
+            speed_component,
+        )
     scorer = DensityScorer(camera_id=camera_id)
     if speed_component is not None:
         # Speed-aware blended score: slow tracked motion dominates, occupancy
@@ -361,6 +380,18 @@ def _analyze_burst(
         # applying the legacy night/low-quality downgrade again would punish
         # low-confidence runs twice.
         density_calibrated = dominant_density
+        # Daytime confidence discounting should suppress false jams, but it
+        # should not collapse a clearly heavy daytime detector consensus all
+        # the way to light. Keep a moderate floor for clear, non-night scenes.
+        lighting = str(scene_info.get("lighting") or scene_info.get("scene") or "unknown").lower()
+        quality_flag = str(scene_info.get("quality_flag") or "unknown").lower()
+        if (
+            lighting != "night"
+            and quality_flag != "poor"
+            and raw_density in {"heavy", "blocked"}
+            and dominant_density == "light"
+        ):
+            density_calibrated = "moderate"
     else:
         # Legacy fallback: mode of per-frame labels with deterministic
         # higher-severity tie-breaking.
@@ -381,21 +412,6 @@ def _analyze_burst(
         )
     line_crossings = _line_counter_snapshot(flow_counter)
 
-    # Speed-based congestion component: median tracked displacement vs the
-    # camera's calibrated free-flow reference. When no calibration or no
-    # motion data exists, the score falls back to occupancy-only blending.
-    median_speed = median_track_speed(tracker.track_histories)
-    freeflow = freeflow_for_camera(camera_id)
-    speed_ratio: float | None = None
-    speed_component: float | None = None
-    if median_speed is not None and freeflow:
-        speed_ratio = round(median_speed / freeflow, 4)
-        speed_component = speed_score_from_ratio(speed_ratio)
-        LOGGER.info(
-            "Speed estimate for %s: median=%.2f px/frame, freeflow=%.2f, ratio=%.2f -> score=%s",
-            camera_id, median_speed, freeflow, speed_ratio, speed_component,
-        )
-
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return {
@@ -414,7 +430,7 @@ def _analyze_burst(
             "lighting": scene_info.get("lighting", "unknown"),
             "visibility": scene_info.get("visibility", "unknown"),
             "quality_flag": scene_info.get("quality_flag", "unknown"),
-            "raw_density": max(density_counts, key=density_counts.get) if density_counts else dominant_density,
+            "raw_density": raw_density if raw_density != "unknown" else dominant_density,
             "median_speed_px_per_frame": round(median_speed, 3) if median_speed is not None else None,
             "freeflow_px_per_frame": freeflow,
             "speed_ratio": speed_ratio,

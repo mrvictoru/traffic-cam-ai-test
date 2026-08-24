@@ -133,6 +133,11 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
         json.dumps({"cameras": {"49": {"light": 4, "moderate": 10, "heavy": 16}, "50": {"light": 4, "moderate": 10, "heavy": 16}}}),
         encoding="utf-8",
     )
+    calibration_path = tmp_path / "camera_speed_calibration.json"
+    calibration_path.write_text(
+        json.dumps({"cameras": {"49": {"freeflow_px_per_frame": 10.5}}}),
+        encoding="utf-8",
+    )
     rois_path = tmp_path / "camera_rois.json"
     rois_path.write_text(
         json.dumps({"49": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}),
@@ -141,6 +146,30 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
     flow_lines_path = tmp_path / "camera_flow_lines.json"
     flow_lines_path.write_text(
         json.dumps({"50": {"start": [0.0, 0.5], "end": [1.0, 0.5]}}),
+        encoding="utf-8",
+    )
+    analyses_dir = tmp_path / "data" / "analyses"
+    analyses_dir.mkdir(parents=True)
+    (analyses_dir / "50").mkdir()
+    (analyses_dir / "50" / "20260820T030000Z.json").write_text(
+        json.dumps(
+            {
+                "camera_id": "50",
+                "captured_at": "2026-08-20T03:00:00Z",
+                "details": {"median_speed_px_per_frame": 8.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (analyses_dir / "59").mkdir()
+    (analyses_dir / "59" / "20260820T030000Z.json").write_text(
+        json.dumps(
+            {
+                "camera_id": "59",
+                "captured_at": "2026-08-20T03:00:00Z",
+                "details": {},
+            }
+        ),
         encoding="utf-8",
     )
     report_path = tmp_path / "audit.json"
@@ -154,6 +183,12 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
             str(coordinates_path),
             "--thresholds-file",
             str(thresholds_path),
+            "--calibration-file",
+            str(calibration_path),
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--calibration-min-history",
+            "1",
             "--rois-file",
             str(rois_path),
             "--flow-lines-file",
@@ -172,13 +207,22 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
     assert payload["missing_counts"] == {
         "coordinates": 2,
         "thresholds": 1,
+        "speed_calibration": 2,
         "rois": 2,
         "flow_lines": 2,
     }
     assert payload["missing_camera_ids"]["coordinates"] == ["50", "59"]
     assert payload["missing_camera_ids"]["thresholds"] == ["59"]
+    assert payload["missing_camera_ids"]["speed_calibration"] == ["50", "59"]
     assert payload["missing_camera_ids"]["rois"] == ["50", "59"]
     assert payload["missing_camera_ids"]["flow_lines"] == ["49", "59"]
+    assert payload["speed_calibration"]["configured_camera_ids"] == ["49"]
+    assert payload["speed_calibration"]["status_counts"] == {
+        "calibrated": 1,
+        "missing_motion_history": 1,
+        "ready": 1,
+    }
+    assert payload["speed_calibration"]["status_camera_ids"]["ready"] == ["50"]
     assert payload["next_calibration_queue"] == [
         {
             "camera_id": "49",
@@ -198,6 +242,53 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
         },
     ]
     assert json.loads(report_path.read_text(encoding="utf-8")) == payload
+
+
+def test_calibrate_freeflow_command_runs_and_prints_result(monkeypatch, capsys, tmp_path: Path) -> None:
+    recorded = {}
+
+    def _fake_calibrate(data_dir, config_path, min_history, dry_run, offpeak_start=2, offpeak_end=5):
+        recorded["data_dir"] = data_dir
+        recorded["config_path"] = config_path
+        recorded["min_history"] = min_history
+        recorded["dry_run"] = dry_run
+        recorded["offpeak_start"] = offpeak_start
+        recorded["offpeak_end"] = offpeak_end
+        return {"49": {"freeflow_px_per_frame": 10.5, "sample_count": 6, "offpeak_hours": "02-05"}}
+
+    monkeypatch.setattr(cli, "calibrate", _fake_calibrate)
+
+    result = cli.main(
+        [
+            "calibrate-freeflow",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--config",
+            str(tmp_path / "camera_speed_calibration.json"),
+            "--min-history",
+            "7",
+            "--offpeak-start",
+            "1",
+            "--offpeak-end",
+            "4",
+            "--dry-run",
+        ]
+    )
+
+    assert result == 0
+    assert recorded["data_dir"] == tmp_path / "data"
+    assert recorded["config_path"] == tmp_path / "camera_speed_calibration.json"
+    assert recorded["min_history"] == 7
+    assert recorded["dry_run"] is True
+    assert recorded["offpeak_start"] == 1
+    assert recorded["offpeak_end"] == 4
+    assert json.loads(capsys.readouterr().out) == {
+        "data_dir": str(tmp_path / "data"),
+        "config": str(tmp_path / "camera_speed_calibration.json"),
+        "dry_run": True,
+        "camera_count": 1,
+        "cameras": {"49": {"freeflow_px_per_frame": 10.5, "sample_count": 6, "offpeak_hours": "02-05"}},
+    }
 
 
 def test_serve_dispatches_to_uvicorn(monkeypatch) -> None:

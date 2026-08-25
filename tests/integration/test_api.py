@@ -9,7 +9,16 @@ from trafficcam.api.main import app
 from trafficcam.storage.json_store import JsonStore
 
 
-def _seed_analysis(store: JsonStore, camera_id: str, captured_at: str, density: str, vehicle_count: int) -> None:
+def _seed_analysis(
+    store: JsonStore,
+    camera_id: str,
+    captured_at: str,
+    density: str,
+    vehicle_count: int,
+    *,
+    latitude: float = 22.193,
+    longitude: float = 113.541,
+) -> None:
     store.save_json(
         f"analyses/{camera_id}/{captured_at.replace(':', '').replace('-', '')}.json",
         {
@@ -38,8 +47,8 @@ def _seed_analysis(store: JsonStore, camera_id: str, captured_at: str, density: 
                     "district": "澳門區",
                     "sub_district": "新馬路",
                     "stream_url": "https://example.test/live/49.m3u8",
-                    "latitude": 22.193,
-                    "longitude": 113.541,
+                    "latitude": latitude,
+                    "longitude": longitude,
                     "debug_frames_dir": f"output/live-validation/cam_{camera_id}/debug",
                 },
             },
@@ -110,8 +119,8 @@ def test_api_endpoints_serve_persisted_camera_data(tmp_path: Path, monkeypatch) 
 
 def test_api_overview_endpoint(tmp_path: Path, monkeypatch) -> None:
     store = JsonStore(tmp_path / "data")
-    _seed_analysis(store, "49", "2026-06-24T09:00:00Z", "heavy", 22)
-    _seed_analysis(store, "50", "2026-06-24T09:05:00Z", "light", 5)
+    _seed_analysis(store, "49", "2026-06-24T09:00:00Z", "heavy", 22, latitude=22.193, longitude=113.541)
+    _seed_analysis(store, "50", "2026-06-24T09:05:00Z", "light", 5, latitude=22.1942, longitude=113.544)
     monkeypatch.chdir(tmp_path)
 
     with TestClient(app) as client:
@@ -126,6 +135,8 @@ def test_api_overview_endpoint(tmp_path: Path, monkeypatch) -> None:
     assert overview["average_score"] is not None
     worst_ids = [cam["camera_id"] for cam in overview["worst_cameras"]]
     assert worst_ids[0] == "49"
+    assert len(overview["corridor_segments"]) == 1
+    assert overview["corridor_segments"][0]["camera_ids"] == ["49", "50"]
 
 
 def test_api_returns_404_for_unknown_camera(tmp_path: Path, monkeypatch) -> None:

@@ -26,16 +26,26 @@ def _isolate_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _seed_analysis(store: JsonStore, camera_id: str = "cam1") -> None:
+def _seed_analysis(
+    store: JsonStore,
+    camera_id: str = "cam1",
+    *,
+    latitude: float = 22.195,
+    longitude: float = 113.558,
+    captured_at: str = "2026-06-24T08:00:00Z",
+    density: str = "heavy",
+    congestion_score: float = 72.0,
+) -> None:
     store.save_json(
         f"analyses/{camera_id}/001.json",
         {
             "camera_id": camera_id,
-            "captured_at": "2026-06-24T08:00:00Z",
-            "label": "heavy",
+            "captured_at": captured_at,
+            "label": density,
             "details": {
-                "density": "heavy",
+                "density": density,
                 "vehicle_count": 42,
+                "congestion_score": congestion_score,
                 "mean_confidence": 0.5,
                 "active_tracks": 10,
                 "scene": "day",
@@ -46,8 +56,8 @@ def _seed_analysis(store: JsonStore, camera_id: str = "cam1") -> None:
                     "district": "澳門區",
                     "sub_district": "外港",
                     "stream_url": "https://example/stream.m3u8",
-                    "latitude": 22.195,
-                    "longitude": 113.558,
+                    "latitude": latitude,
+                    "longitude": longitude,
                 },
             },
         },
@@ -286,3 +296,36 @@ def test_update_camera_position_persists_coordinates(tmp_path: Path, monkeypatch
     payload = json.loads((tmp_path / "camera_coordinates.json").read_text(encoding="utf-8"))
     assert payload["cameras"]["cam9"]["latitude"] == 22.1905
     assert payload["cameras"]["cam9"]["longitude"] == 113.5505
+
+
+def test_get_overview_includes_corridor_segments(tmp_path: Path) -> None:
+    store = JsonStore(tmp_path)
+    _seed_analysis(
+        store,
+        "cam1",
+        latitude=22.195,
+        longitude=113.558,
+        density="heavy",
+        congestion_score=72.0,
+    )
+    _seed_analysis(
+        store,
+        "cam2",
+        latitude=22.1965,
+        longitude=113.5605,
+        density="moderate",
+        congestion_score=46.0,
+    )
+
+    module = reload(routes)
+    overview = module.get_overview(store=store)
+
+    assert overview["camera_count"] == 2
+    assert len(overview["corridor_segments"]) == 1
+    segment = overview["corridor_segments"][0]
+    assert segment["camera_ids"] == ["cam1", "cam2"]
+    assert segment["district"] == "澳門區"
+    assert segment["sub_district"] == "外港"
+    assert segment["density"] == "heavy"
+    assert segment["average_score"] == pytest.approx(59.0)
+    assert segment["is_approximate"] is False

@@ -184,12 +184,14 @@ const REFRESH_MS = 15000;
 const DENSITY_ORDER = { blocked: 4, heavy: 3, moderate: 2, light: 1, unknown: 0 };
 
 let CAMERAS = INITIAL.cameras || [];
+let CORRIDOR_SEGMENTS = (INITIAL.overview && INITIAL.overview.corridor_segments) || [];
 const map = L.map('map', { zoomControl: true }).setView([22.169, 113.555], 13);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
 let markers = [];
+let corridorLayers = [];
 let refreshTimer = null;
 let editModeEnabled = false;
 
@@ -270,6 +272,35 @@ function renderList() {
 }
 
 function clearMarkers() { markers.forEach(m => map.removeLayer(m)); markers = []; }
+
+function clearSegments() { corridorLayers.forEach(layer => map.removeLayer(layer)); corridorLayers = []; }
+
+function addSegments(segments) {
+  clearSegments();
+  (segments || []).forEach(segment => {
+    const start = segment.start || {};
+    const end = segment.end || {};
+    if (start.latitude == null || start.longitude == null || end.latitude == null || end.longitude == null) return;
+    const color = densityColor(segment.density);
+    const weight = segment.average_score != null ? Math.max(3, Math.min(8, Math.round(segment.average_score / 18))) : 4;
+    const dashArray = segment.is_approximate ? '8 6' : null;
+    const polyline = L.polyline(
+      [[start.latitude, start.longitude], [end.latitude, end.longitude]],
+      {
+        color,
+        weight,
+        opacity: segment.is_approximate ? 0.55 : 0.85,
+        dashArray,
+      }
+    ).addTo(map);
+    const scoreLabel = segment.average_score != null ? ` · score ${Math.round(segment.average_score)}` : '';
+    polyline.bindTooltip(
+      `${segment.sub_district || segment.district || 'Corridor'} · ${(segment.density || 'unknown').toUpperCase()}${scoreLabel}`,
+      { sticky: true }
+    );
+    corridorLayers.push(polyline);
+  });
+}
 
 async function saveCameraPosition(cameraId, latitude, longitude) {
   try {
@@ -401,10 +432,12 @@ async function refresh() {
   try {
     const res = await fetch('/api/cameras');
     CAMERAS = await res.json();
-    addMarkers(CAMERAS);
-    renderList();
     let overview = null;
     try { overview = await fetch('/api/overview').then(r => r.json()); } catch (_) {}
+    CORRIDOR_SEGMENTS = (overview && overview.corridor_segments) || [];
+    addSegments(CORRIDOR_SEGMENTS);
+    addMarkers(CAMERAS);
+    renderList();
     renderCards(overview);
     setStatus('Updated ' + new Date().toLocaleTimeString());
   } catch (e) {
@@ -436,6 +469,7 @@ document.getElementById('edit-mode-btn').addEventListener('click', () => {
 
 buildLegend();
 renderCards(INITIAL.overview);
+addSegments(CORRIDOR_SEGMENTS);
 addMarkers(CAMERAS);
 renderList();
 setStatus('Loaded ' + CAMERAS.length + ' cameras');

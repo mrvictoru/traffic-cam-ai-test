@@ -81,6 +81,12 @@ _DENSITY_PRIORITY = {
     "light": 1,
     "unknown": 0,
 }
+_DENSITY_FROM_SCORE = (
+    (75.0, "blocked"),
+    (50.0, "heavy"),
+    (25.0, "moderate"),
+)
+_CORRIDOR_MAX_GAP_DEGREES = 0.02
 _OUTPUT_PREFIX = "output/"
 
 # Cache for parsed analysis records keyed by the data directory's mtime so
@@ -343,6 +349,90 @@ def _calibration_status(camera_id: str, calibrations: dict[str, dict[str, Any]])
         "sample_count": sample_count if isinstance(sample_count, int) else None,
         "offpeak_hours": str(entry.get("offpeak_hours")) if entry.get("offpeak_hours") else None,
     }
+
+
+def _density_from_score(score: float | None) -> str:
+    if score is None:
+        return "unknown"
+    for threshold, label in _DENSITY_FROM_SCORE:
+        if score >= threshold:
+            return label
+    return "light"
+
+
+def _camera_point(camera: dict[str, Any]) -> tuple[float, float] | None:
+    latitude = _coerce_coordinate(camera.get("latitude"))
+    longitude = _coerce_coordinate(camera.get("longitude"))
+    if latitude is not None and longitude is not None:
+        return latitude, longitude
+    position = camera.get("map_position") or {}
+    latitude = _coerce_coordinate(position.get("latitude"))
+    longitude = _coerce_coordinate(position.get("longitude"))
+    if latitude is None or longitude is None:
+        return None
+    return latitude, longitude
+
+
+def _corridor_group_key(camera: dict[str, Any]) -> tuple[str, str]:
+    district = str(camera.get("district") or "unknown")
+    sub_district = str(camera.get("sub_district") or district)
+    return district, sub_district
+
+
+def _distance_sq(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return ((left[0] - right[0]) ** 2) + ((left[1] - right[1]) ** 2)
+
+
+def _build_corridor_segments(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for camera in summaries:
+        point = _camera_point(camera)
+        if point is None:
+            continue
+        grouped.setdefault(_corridor_group_key(camera), []).append(camera)
+
+    max_gap_sq = _CORRIDOR_MAX_GAP_DEGREES * _CORRIDOR_MAX_GAP_DEGREES
+    segments: list[dict[str, Any]] = []
+    for (district, sub_district), cameras in grouped.items():
+        ordered = sorted(
+            cameras,
+            key=lambda camera: (
+                _camera_point(camera)[1],
+                _camera_point(camera)[0],
+                str(camera.get("camera_id") or ""),
+            ),
+        )
+        for left, right in zip(ordered, ordered[1:]):
+            left_point = _camera_point(left)
+            right_point = _camera_point(right)
+            if left_point is None or right_point is None or left_point == right_point:
+                continue
+            if _distance_sq(left_point, right_point) > max_gap_sq:
+                continue
+            scores = [
+                float(score)
+                for score in (left.get("latest_congestion_score"), right.get("latest_congestion_score"))
+                if isinstance(score, (int, float))
+            ]
+            average_score = round(sum(scores) / len(scores), 2) if scores else None
+            density = _density_from_score(average_score)
+            segments.append(
+                {
+                    "segment_id": f"{district}:{sub_district}:{left.get('camera_id')}-{right.get('camera_id')}",
+                    "district": district,
+                    "sub_district": sub_district,
+                    "camera_ids": [left.get("camera_id"), right.get("camera_id")],
+                    "start": {"latitude": left_point[0], "longitude": left_point[1]},
+                    "end": {"latitude": right_point[0], "longitude": right_point[1]},
+                    "average_score": average_score,
+                    "density": density,
+                    "is_approximate": any(
+                        ((camera.get("map_position") or {}).get("source") or "approximate") != "coordinates"
+                        for camera in (left, right)
+                    ),
+                }
+            )
+    return segments
 
 
 _MANIFEST_PATH = Path(os.getenv("CAMERA_MANIFEST_PATH", "data/manifest.json"))
@@ -696,6 +786,7 @@ def update_camera_position(camera_id: str, payload: dict[str, Any]) -> dict[str,
 def get_overview(store: Any = None) -> dict[str, Any]:
     """City-wide congestion overview for the dashboard header cards."""
     summaries = build_camera_summaries(store=store)
+    corridor_segments = _build_corridor_segments(summaries)
     counts = {"light": 0, "moderate": 0, "heavy": 0, "blocked": 0, "unknown": 0}
     scores: list[float] = []
     for cam in summaries:
@@ -717,6 +808,7 @@ def get_overview(store: Any = None) -> dict[str, Any]:
         "camera_count": len(summaries),
         "density_counts": {k: v for k, v in counts.items() if k != "unknown"} | {"unknown": counts["unknown"]},
         "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "corridor_segments": corridor_segments,
         "worst_cameras": [
             {
                 "camera_id": c.get("camera_id"),

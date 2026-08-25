@@ -444,7 +444,7 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ## 9. Current project checklist
 
-Status as of 2026-08-24:
+Status as of 2026-08-25:
 
 - [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
 - [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
@@ -452,9 +452,10 @@ Status as of 2026-08-24:
 - [x] time-of-day and hour-of-week baseline adjustments are implemented in `src/trafficcam/analysis/temporal.py`
 - [x] the run-once pipeline in `scripts/run_e2e_pipeline.py` now emits speed-aware congestion and temporal adjustment metadata
 - [x] focused validation covered detector regression, speed estimation, free-flow calibration, and temporal scoring checks
-- [x] the dashboard work is in active progress on the current branch, with map and route-level view development alongside the traffic scoring updates
+- [x] the dashboard work is active on the current branch and includes camera map editing, dashboard summary cards, and route-level detail panels
+- [x] the API and dashboard now include a lightweight corridor overlay derived from nearby cameras in the same district/sub-district cluster
 - [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
-- [ ] complete corridor / road-segment aggregation for a true map-layer style overlay
+- [ ] turn the current heuristic corridor overlay into a config-backed road-segment model for production-like traffic-layer geometry
 - [ ] continue the API/UI polish and richer dashboard integration for drill-down and camera detail views
 - [ ] add more end-to-end coverage around live camera coordinates, map rendering, and UI response flows
 
@@ -473,22 +474,34 @@ This repo already includes the following completed work:
 - [x] Docker support updated to include the new package layout and dependencies
 - [x] README updated to document the current state and live probe workflow
 - [x] analytical scoring, time-of-day baselines, and speed-aware calibration work are now part of the main pipeline and validation flow
-- [x] the live dashboard branch is actively working on map visualization and camera list features as the next layer of the UI
+- [x] the live dashboard branch has working camera visualization, summary cards, and a lightweight corridor overlay for road-segment style map rendering
 
 Work still to do:
 
 - [x] implement the analysis pipeline in `src/trafficcam/analysis/`
 - [x] implement speed-based traffic scoring and motion-aware congestion estimation (see `src/trafficcam/vision/speed_estimator.py`; blended via `DensityScorer.score(speed_component=...)`, wired into `scripts/run_e2e_pipeline.py`)
 - [x] add time-of-day baselines for traffic severity (implemented in `src/trafficcam/analysis/temporal.py`; applied to main scoring in `scripts/run_e2e_pipeline.py`)
+- [x] add a first-pass corridor overlay to the dashboard and overview payloads (`src/trafficcam/api/routes.py` + `src/trafficcam/web/map_page.py`)
 - [ ] complete per-camera calibration rollout for traffic severity using sustained live motion history
 - [ ] implement storage persistence beyond simple JSON storage
 - [ ] finish API routing and connect it to the persisted results and dashboard data model
 - [ ] complete the basic web dashboard and map overlays in `src/trafficcam/web/`
-- [ ] add road-segment / corridor overlays to approximate a Google Maps traffic layer
+- [ ] convert the current corridor overlay into a config-backed road-segment model for a more production-like traffic layer
 - [ ] add richer integration tests for API and UI behavior
 - [ ] refine the capture retry policy and error handling
 
-The project is now past the initial prototype stage. The main work remaining is operationalizing the calibrated scoring model into a more polished map/dashboard experience, with live calibration and corridor aggregation as the most important follow-ups before a production-like traffic layer is ready.
+The project is now past the initial prototype stage. The main work remaining is operationalizing the calibrated scoring model into a more polished map/dashboard experience, with live calibration and a more explicit corridor/road model as the next major follow-ups before a production-like traffic layer is ready.
+
+## 11. Immediate next actions
+
+For the next work session, the best next move is:
+
+1. collect and validate more live motion history so per-camera calibration values can be populated from real data rather than heuristic defaults;
+2. replace the current district-based corridor heuristic with a config-backed road-segment model, using explicit camera groupings or corridor definitions;
+3. wire the segment model into the overview API and map rendering as the primary traffic-layer overlay, while keeping the per-camera detail markers as the drill-down view;
+4. add a focused regression check covering the segment model and the dashboard/overview payload.
+
+This keeps the project moving from a solid dashboard prototype toward a more realistic traffic-layer experience without overbuilding the architecture before the calibration data is trustworthy.
 
 ---
 

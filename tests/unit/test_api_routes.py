@@ -316,23 +316,41 @@ def test_get_overview_includes_corridor_segments(tmp_path: Path) -> None:
         density="moderate",
         congestion_score=46.0,
     )
+    corridor_path = tmp_path / "camera_corridors.json"
+    corridor_path.write_text(
+        json.dumps({"corridors": [{"corridor_id": "outer-harbour", "name": "Outer Harbour", "camera_ids": ["cam1", "cam2"]}]}),
+        encoding="utf-8",
+    )
 
-    module = reload(routes)
-    overview = module.get_overview(store=store)
+    with pytest.MonkeyPatch.context() as local_patch:
+        local_patch.chdir(tmp_path)
+        local_patch.setenv("CAMERA_CORRIDORS_PATH", str(corridor_path))
+        module = reload(routes)
+        overview = module.get_overview(store=store)
 
     assert overview["camera_count"] == 2
     assert len(overview["corridor_segments"]) == 1
     segment = overview["corridor_segments"][0]
     assert segment["camera_ids"] == ["cam1", "cam2"]
+    assert segment["corridor_id"] == "outer-harbour"
+    assert segment["name"] == "Outer Harbour"
     assert segment["district"] == "澳門區"
     assert segment["sub_district"] == "外港"
     assert segment["density"] == "heavy"
     assert segment["average_score"] == pytest.approx(59.0)
     assert segment["is_approximate"] is False
+
+
+def test_get_overview_omits_unconfigured_corridors(tmp_path: Path) -> None:
+    store = JsonStore(tmp_path)
+    _seed_analysis(store, "cam1")
+    module = reload(routes)
+    overview = module.get_overview(store=store)
+    assert overview["corridor_segments"] == []
     calibration = overview["calibration_summary"]
     assert calibration["configured"] == 0
-    assert calibration["missing"] == 2
-    assert calibration["missing_motion_history"] == 2
+    assert calibration["missing"] == 1
+    assert calibration["missing_motion_history"] == 1
     assert calibration["next_ready_camera_ids"] == []
 
 

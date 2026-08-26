@@ -121,7 +121,12 @@ def test_api_overview_endpoint(tmp_path: Path, monkeypatch) -> None:
     store = JsonStore(tmp_path / "data")
     _seed_analysis(store, "49", "2026-06-24T09:00:00Z", "heavy", 22, latitude=22.193, longitude=113.541)
     _seed_analysis(store, "50", "2026-06-24T09:05:00Z", "light", 5, latitude=22.1942, longitude=113.544)
+    (tmp_path / "camera_corridors.json").write_text(
+        '{"corridors":[{"corridor_id":"test-corridor","camera_ids":["49","50"]}]}',
+        encoding="utf-8",
+    )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CAMERA_CORRIDORS_PATH", str(tmp_path / "camera_corridors.json"))
 
     with TestClient(app) as client:
         response = client.get("/api/overview")

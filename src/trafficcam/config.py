@@ -108,6 +108,10 @@ class Settings:
     roi_config_path: str = os.getenv("ROI_CONFIG_PATH", "config/camera_rois.json")
     roi_filter_enabled: bool = os.getenv("ROI_FILTER_ENABLED", "1").strip() in {"1", "true", "yes", "on"}
     flow_line_config_path: str = os.getenv("FLOW_LINE_CONFIG_PATH", "config/camera_flow_lines.json")
+    camera_corridors_path: str = os.getenv(
+        "CAMERA_CORRIDORS_PATH",
+        "config/camera_corridors.json",
+    )
 
     # Trend analysis
     trend_min_history: int = int(os.getenv("TREND_MIN_HISTORY", "6"))

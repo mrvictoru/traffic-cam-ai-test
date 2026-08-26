@@ -86,7 +86,6 @@ _DENSITY_FROM_SCORE = (
     (50.0, "heavy"),
     (25.0, "moderate"),
 )
-_CORRIDOR_MAX_GAP_DEGREES = 0.02
 _CALIBRATION_MIN_HISTORY = 5
 _CALIBRATION_OFFPEAK_START = 2
 _CALIBRATION_OFFPEAK_END = 5
@@ -386,31 +385,34 @@ def _distance_sq(left: tuple[float, float], right: tuple[float, float]) -> float
     return ((left[0] - right[0]) ** 2) + ((left[1] - right[1]) ** 2)
 
 
-def _build_corridor_segments(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for camera in summaries:
-        point = _camera_point(camera)
-        if point is None:
-            continue
-        grouped.setdefault(_corridor_group_key(camera), []).append(camera)
+def _load_camera_corridors(path: str | Path | None = None) -> list[dict[str, Any]]:
+    target = Path(path or os.getenv("CAMERA_CORRIDORS_PATH", "config/camera_corridors.json"))
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    corridors = payload.get("corridors") if isinstance(payload, dict) else None
+    if not isinstance(corridors, list):
+        return []
+    return [corridor for corridor in corridors if isinstance(corridor, dict)]
 
-    max_gap_sq = _CORRIDOR_MAX_GAP_DEGREES * _CORRIDOR_MAX_GAP_DEGREES
+
+def _build_corridor_segments(
+    summaries: list[dict[str, Any]],
+    corridors: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    cameras_by_id = {str(camera.get("camera_id")): camera for camera in summaries}
     segments: list[dict[str, Any]] = []
-    for (district, sub_district), cameras in grouped.items():
-        ordered = sorted(
-            cameras,
-            key=lambda camera: (
-                _camera_point(camera)[1],
-                _camera_point(camera)[0],
-                str(camera.get("camera_id") or ""),
-            ),
-        )
-        for left, right in zip(ordered, ordered[1:]):
+    for index, corridor in enumerate(corridors if corridors is not None else _load_camera_corridors()):
+        camera_ids = [str(camera_id) for camera_id in corridor.get("camera_ids", [])]
+        cameras = [cameras_by_id[camera_id] for camera_id in camera_ids if camera_id in cameras_by_id]
+        if len(cameras) < 2:
+            continue
+        corridor_name = str(corridor.get("name") or corridor.get("corridor_id") or f"corridor-{index + 1}")
+        for segment_index, (left, right) in enumerate(zip(cameras, cameras[1:]), start=1):
             left_point = _camera_point(left)
             right_point = _camera_point(right)
             if left_point is None or right_point is None or left_point == right_point:
-                continue
-            if _distance_sq(left_point, right_point) > max_gap_sq:
                 continue
             scores = [
                 float(score)
@@ -421,9 +423,11 @@ def _build_corridor_segments(summaries: list[dict[str, Any]]) -> list[dict[str, 
             density = _density_from_score(average_score)
             segments.append(
                 {
-                    "segment_id": f"{district}:{sub_district}:{left.get('camera_id')}-{right.get('camera_id')}",
-                    "district": district,
-                    "sub_district": sub_district,
+                    "segment_id": f"{corridor_name}:{segment_index}",
+                    "corridor_id": str(corridor.get("corridor_id") or corridor_name),
+                    "name": corridor_name,
+                    "district": corridor.get("district") or left.get("district"),
+                    "sub_district": corridor.get("sub_district") or left.get("sub_district"),
                     "camera_ids": [left.get("camera_id"), right.get("camera_id")],
                     "start": {"latitude": left_point[0], "longitude": left_point[1]},
                     "end": {"latitude": right_point[0], "longitude": right_point[1]},

@@ -1,3 +1,30 @@
 {
-  "corridors": []
+  "corridors": [
+    {
+      "corridor_id": "outer-harbour-terminal",
+      "name": "Outer Harbour Terminal",
+      "district": "口岸",
+      "sub_district": "外港客運碼頭區",
+      "camera_ids": ["58", "59"],
+      "source": "camera_coordinates.json and DSAT manifest names",
+      "notes": "Two cameras explicitly named Outer Harbour Terminal A and B with adjacent verified coordinates."
+    },
+    {
+      "corridor_id": "friendship-bridge",
+      "name": "Friendship Bridge",
+      "district": "跨海大橋",
+      "sub_district": "跨海大橋",
+      "camera_ids": ["51", "52"],
+      "source": "camera_coordinates.json and DSAT manifest names",
+      "notes": "Two cameras explicitly named as Friendship Bridge approaches."
+    },
+    {
+      "corridor_id": "nam-van-junctions",
+      "name": "Nam Van Junctions",
+      "district": "澳門區",
+      "camera_ids": ["49", "50"],
+      "source": "camera_coordinates.json and DSAT manifest names",
+      "notes": "Adjacent junction cameras on Avenida da Praia Grande / Nam Van area; treated as a first-pass corridor pending road-geometry verification."
+    }
+  ]
 }

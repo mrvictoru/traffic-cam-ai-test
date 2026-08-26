@@ -458,7 +458,8 @@ Status as of 2026-08-26:
 - [x] an `audit-config` pass over all 9,646 persisted records confirmed none predate the speed-aware pipeline commit, so live motion collection is the gating factor for backfill — not code
 - [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
-- [ ] populate `config/camera_corridors.json` with verified road/camera groupings and geometry from Macau road data
+- [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
+- [ ] verify road geometry and expand `config/camera_corridors.json` for the remaining cameras
 - [ ] continue the API/UI polish and richer dashboard integration for drill-down and camera detail views
 - [ ] add more end-to-end coverage around live camera coordinates, map rendering, and UI response flows
 
@@ -489,7 +490,8 @@ Work still to do:
 - [ ] implement storage persistence beyond simple JSON storage
 - [ ] finish API routing and connect it to the persisted results and dashboard data model
 - [ ] complete the basic web dashboard and map overlays in `src/trafficcam/web/`
-- [x] convert corridor grouping to a config-backed model (`config/camera_corridors.json`); verified road groupings and richer geometry remain to be populated
+- [x] convert corridor grouping to a config-backed model (`config/camera_corridors.json`) and populate three conservative first-pass groupings
+- [ ] verify richer road geometry and expand the corridor catalog beyond the first six positioned cameras
 - [ ] add richer integration tests for API and UI behavior
 - [ ] refine the capture retry policy and error handling
 
@@ -515,7 +517,7 @@ values), so failed analyses no longer produce structurally inconsistent rows.
 
 For later work sessions, the remaining priorities in order:
 
-1. populate the config-backed corridor model with verified road/camera groupings and explicit corridor geometry;
+1. verify road geometry and expand the config-backed corridor model beyond the initial six positioned cameras;
 3. wire the segment model into the overview API and map rendering as the primary traffic-layer overlay, while keeping the per-camera detail markers as the drill-down view;
 4. add a focused regression check covering the segment model and the dashboard/overview payload.
 

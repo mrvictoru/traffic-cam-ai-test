@@ -444,7 +444,7 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ## 9. Current project checklist
 
-Status as of 2026-08-26:
+Status as of 2026-08-27:
 
 - [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
 - [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
@@ -460,6 +460,7 @@ Status as of 2026-08-26:
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
 - [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
 - [x] catalog four additional named-road candidates (Guia Tunnel, Sai Van Bridge, Qingmao Port, and Avenida do Ouvidor Arriaga) as disabled until their camera positions and road order are verified
+- [x] validate enabled/disabled corridor behavior with 17 focused API tests
 - [ ] verify road geometry and expand `config/camera_corridors.json` for the remaining cameras
 - [ ] continue the API/UI polish and richer dashboard integration for drill-down and camera detail views
 - [ ] add more end-to-end coverage around live camera coordinates, map rendering, and UI response flows
@@ -489,8 +490,9 @@ Work still to do:
 - [x] add a first-pass corridor overlay to the dashboard and overview payloads (`src/trafficcam/api/routes.py` + `src/trafficcam/web/map_page.py`)
 - [ ] complete per-camera calibration rollout for traffic severity using sustained live motion history
 - [ ] implement storage persistence beyond simple JSON storage
-- [ ] finish API routing and connect it to the persisted results and dashboard data model
-- [ ] complete the basic web dashboard and map overlays in `src/trafficcam/web/`
+- [x] finish the initial API routing and connect it to persisted results and the dashboard data model
+- [x] complete the basic web dashboard and first-pass map overlays in `src/trafficcam/web/`
+- [ ] continue API/UI polish for richer drill-down and camera detail workflows
 - [x] convert corridor grouping to a config-backed model (`config/camera_corridors.json`) and populate three conservative first-pass groupings
 - [ ] verify richer road geometry and expand the corridor catalog beyond the first six positioned cameras
 - [ ] add richer integration tests for API and UI behavior
@@ -500,7 +502,7 @@ The project is now past the initial prototype stage. The main work remaining is 
 
 ## 11. Immediate next actions
 
-Status update 2026-08-26: an `audit-config` run over the persisted history
+Status update 2026-08-27: an `audit-config` run over the persisted history
 confirmed that none of the 9,646 existing analysis records contain
 `median_speed_px_per_frame` because they all predate the speed-aware scoring
 commit. The rollout therefore needs fresh motion data before free-flow values
@@ -519,14 +521,15 @@ values), so failed analyses no longer produce structurally inconsistent rows.
 For later work sessions, the remaining priorities in order:
 
 1. verify road geometry and expand the config-backed corridor model beyond the initial six positioned cameras;
-3. wire the segment model into the overview API and map rendering as the primary traffic-layer overlay, while keeping the per-camera detail markers as the drill-down view;
-4. add a focused regression check covering the segment model and the dashboard/overview payload.
+2. collect fresh off-peak motion history, rebuild the Docker image, and run the calibration backfill workflow;
+3. wire richer segment geometry into the overview API and map rendering while keeping per-camera markers as the drill-down view;
+4. add broader end-to-end coverage for live coordinates, map rendering, and UI response flows.
 
 This keeps the project moving from a solid dashboard prototype toward a more realistic traffic-layer experience without overbuilding the architecture before the calibration data is trustworthy.
 
 ---
 
-## 10. Notes for implementation
+## 12. Notes for implementation
 
 - Keep the first version lightweight and deterministic.
 - Prefer file-based storage first; add a database only when query complexity grows.

@@ -96,11 +96,11 @@ def test_api_endpoints_serve_persisted_camera_data(tmp_path: Path, monkeypatch) 
     assert detail["stream_url"] == "https://example.test/live/49.m3u8"
     assert detail["map_position"]["latitude"] == 22.193
     assert detail["per_frame"][0]["density"] == "heavy"
-    assert detail["latest_frame_url"] == "/output/live-validation/cam_49/frame_001.jpg"
-    assert detail["latest_debug_frame_url"] == "/output/live-validation/cam_49/debug/frame_001_tracked.jpg"
-    assert detail["latest_image_url"] == "/output/live-validation/cam_49/debug/frame_001_tracked.jpg"
-    assert detail["per_frame"][0]["image_url"] == "/output/live-validation/cam_49/frame_001.jpg"
-    assert detail["per_frame"][0]["display_image_url"] == "/output/live-validation/cam_49/debug/frame_001_tracked.jpg"
+    assert detail["latest_frame_url"].startswith("/output/live-validation/cam_49/frame_001.jpg?v=")
+    assert detail["latest_debug_frame_url"].startswith("/output/live-validation/cam_49/debug/frame_001_tracked.jpg?v=")
+    assert detail["latest_image_url"].startswith("/output/live-validation/cam_49/debug/frame_001_tracked.jpg?v=")
+    assert detail["per_frame"][0]["image_url"].startswith("/output/live-validation/cam_49/frame_001.jpg?v=")
+    assert detail["per_frame"][0]["display_image_url"].startswith("/output/live-validation/cam_49/debug/frame_001_tracked.jpg?v=")
 
     assert frame_response.status_code == 200
     assert frame_response.content == b"frame"
@@ -114,7 +114,7 @@ def test_api_endpoints_serve_persisted_camera_data(tmp_path: Path, monkeypatch) 
         "2026-06-24T09:00:00Z",
     ]
     assert history[-1]["density"] == "heavy"
-    assert history[-1]["congestion_score"] == pytest.approx(66.0)
+    assert history[-1]["congestion_score"] == 66.0
 
 
 def test_api_overview_endpoint(tmp_path: Path, monkeypatch) -> None:
@@ -137,6 +137,8 @@ def test_api_overview_endpoint(tmp_path: Path, monkeypatch) -> None:
     assert worst_ids[0] == "49"
     assert len(overview["corridor_segments"]) == 1
     assert overview["corridor_segments"][0]["camera_ids"] == ["49", "50"]
+    assert overview["calibration_summary"]["configured"] == 0
+    assert overview["calibration_summary"]["missing"] == 2
 
 
 def test_api_returns_404_for_unknown_camera(tmp_path: Path, monkeypatch) -> None:

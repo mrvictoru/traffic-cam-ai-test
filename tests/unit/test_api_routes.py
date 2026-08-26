@@ -329,3 +329,63 @@ def test_get_overview_includes_corridor_segments(tmp_path: Path) -> None:
     assert segment["density"] == "heavy"
     assert segment["average_score"] == pytest.approx(59.0)
     assert segment["is_approximate"] is False
+    calibration = overview["calibration_summary"]
+    assert calibration["configured"] == 0
+    assert calibration["missing"] == 2
+    assert calibration["missing_motion_history"] == 2
+    assert calibration["next_ready_camera_ids"] == []
+
+
+def test_get_overview_reports_calibration_readiness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "cameras": [
+                    {"cam_id": "49", "name": "Cam 49", "district": "澳門區", "sub_district": "外港"},
+                    {"cam_id": "50", "name": "Cam 50", "district": "澳門區", "sub_district": "外港"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CAMERA_MANIFEST_PATH", str(manifest_path))
+    monkeypatch.setenv(
+        "CAMERA_SPEED_CALIBRATION_PATH",
+        str(tmp_path / "camera_speed_calibration.json"),
+    )
+    store = JsonStore(tmp_path)
+
+    for index in range(5):
+        store.save_json(
+            f"analyses/50/{index:03d}.json",
+            {
+                "camera_id": "50",
+                "captured_at": f"2026-06-24T02:0{index}:00Z",
+                "label": "moderate",
+                "details": {
+                    "density": "moderate",
+                    "congestion_score": 40.0,
+                    "median_speed_px_per_frame": 10.0 + index,
+                    "capture_result": {
+                        "name": "Cam 50",
+                        "district": "澳門區",
+                        "sub_district": "外港",
+                        "latitude": 22.19,
+                        "longitude": 113.55,
+                    },
+                },
+            },
+        )
+
+    with pytest.MonkeyPatch.context() as local_patch:
+        local_patch.chdir(tmp_path)
+        module = reload(routes)
+        overview = module.get_overview(store=store)
+
+    calibration = overview["calibration_summary"]
+    assert calibration["configured"] == 0
+    assert calibration["ready"] == 1
+    assert calibration["missing"] == 2
+    assert calibration["next_ready_camera_ids"] == ["50"]

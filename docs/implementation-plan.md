@@ -444,7 +444,7 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ## 9. Current project checklist
 
-Status as of 2026-08-25:
+Status as of 2026-08-26:
 
 - [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
 - [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
@@ -454,6 +454,8 @@ Status as of 2026-08-25:
 - [x] focused validation covered detector regression, speed estimation, free-flow calibration, and temporal scoring checks
 - [x] the dashboard work is active on the current branch and includes camera map editing, dashboard summary cards, and route-level detail panels
 - [x] the API and dashboard now include a lightweight corridor overlay derived from nearby cameras in the same district/sub-district cluster
+- [x] `/api/overview` exposes a `calibration_summary` block and the dashboard shows configured/ready/need-history counts so rollout progress is visible at a glance
+- [x] an `audit-config` pass over all 9,646 persisted records confirmed none predate the speed-aware pipeline commit, so live motion collection is the gating factor for backfill — not code
 - [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
 - [ ] turn the current heuristic corridor overlay into a config-backed road-segment model for production-like traffic-layer geometry
 - [ ] continue the API/UI polish and richer dashboard integration for drill-down and camera detail views
@@ -494,10 +496,25 @@ The project is now past the initial prototype stage. The main work remaining is 
 
 ## 11. Immediate next actions
 
-For the next work session, the best next move is:
+Status update 2026-08-26: an `audit-config` run over the persisted history
+confirmed that none of the 9,646 existing analysis records contain
+`median_speed_px_per_frame` because they all predate the speed-aware scoring
+commit. The rollout therefore needs fresh motion data before free-flow values
+can be computed — no code change can backfill from this history.
 
-1. collect and validate more live motion history so per-camera calibration values can be populated from real data rather than heuristic defaults;
-2. replace the current district-based corridor heuristic with a config-backed road-segment model, using explicit camera groupings or corridor definitions;
+The manual rollout loop is now:
+
+1. rebuild/refresh the Docker image so runs use the current speed-aware pipeline;
+2. run scheduled capture cycles across off-peak hours (02:00–05:00 local) so each camera accumulates at least `--min-history` (default 5) usable motion samples;
+3. run `python -m trafficcam.cli calibrate-freeflow --data-dir data --dry-run` to preview which cameras are ready, then drop `--dry-run` to persist values into `config/camera_speed_calibration.json`;
+4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` climbs and the dashboard's calibration cards reflect it.
+
+Error-path records now carry the same schema as successful ones (null motion
+values), so failed analyses no longer produce structurally inconsistent rows.
+
+For later work sessions, the remaining priorities in order:
+
+1. replace the current district-based corridor heuristic with a config-backed road-segment model, using explicit camera groupings or corridor definitions;
 3. wire the segment model into the overview API and map rendering as the primary traffic-layer overlay, while keeping the per-camera detail markers as the drill-down view;
 4. add a focused regression check covering the segment model and the dashboard/overview payload.
 

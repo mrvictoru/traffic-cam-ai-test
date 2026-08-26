@@ -233,16 +233,26 @@ function buildLegend() {
 function renderCards(overview) {
   const o = overview || {};
   const dc = o.density_counts || {};
+  const calibration = o.calibration_summary || {};
   const cards = [
     ['Avg score', o.average_score != null ? o.average_score.toFixed(1) : '—', '#e2e8f0'],
     ['Blocked', dc.blocked ?? '—', DENSITY_COLORS.blocked],
     ['Heavy', dc.heavy ?? '—', DENSITY_COLORS.heavy],
-    ['Moderate', dc.moderate ?? '—', DENSITY_COLORS.moderate],
-    ['Light', dc.light ?? '—', DENSITY_COLORS.light],
+    ['Calibrated', calibration.configured ?? '—', '#38bdf8'],
+    ['Ready', calibration.ready ?? '—', '#a3e635'],
+    ['Need history', calibration.insufficient_history ?? '—', '#facc15'],
     ['Cameras', o.camera_count ?? CAMERAS.length, '#e2e8f0'],
   ];
   document.getElementById('cards').innerHTML = cards.map(([k, v, c]) =>
     `<div class="card"><div class="k">${k}</div><div class="v" style="color:${c}">${v}</div></div>`).join('');
+
+  const readyQueue = Array.isArray(calibration.next_ready_camera_ids) && calibration.next_ready_camera_ids.length
+    ? ` · ready: ${calibration.next_ready_camera_ids.join(', ')}`
+    : '';
+  const existing = document.getElementById('status').textContent || '';
+  if (existing.startsWith('Loaded') || existing.startsWith('Updated')) {
+    document.getElementById('status').textContent = `${existing} · calibration ${calibration.configured ?? 0}/${o.camera_count ?? CAMERAS.length}${readyQueue}`;
+  }
 }
 
 function renderList() {

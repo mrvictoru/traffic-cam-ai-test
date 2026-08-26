@@ -527,6 +527,15 @@ def _run_single_cycle(
                     "mean_confidence": 0.0,
                     "analysis_error": str(exc),
                     "raw_density": "unknown",
+                    # Keep schema parity with successful records so downstream
+                    # consumers (calibration scanner, dashboard) see a stable
+                    # shape; null motion values are simply skipped.
+                    "median_speed_px_per_frame": None,
+                    "freeflow_px_per_frame": None,
+                    "speed_ratio": None,
+                    "speed_component": None,
+                    "moving_vehicle_count": 0,
+                    "baseline": None,
                     "flow_rate_vph": {"northbound": 0, "southbound": 0, "total": 0},
                     "line_crossings": {"in": 0, "out": 0, "total": 0},
                     "frame_count": 0,

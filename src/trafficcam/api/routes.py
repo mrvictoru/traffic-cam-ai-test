@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from trafficcam.calibration import load_camera_calibrations
+from trafficcam.calibration import load_camera_calibrations, summarize_calibration_coverage
 from trafficcam.storage.json_store import JsonStore
 
 router = APIRouter()
@@ -87,6 +87,9 @@ _DENSITY_FROM_SCORE = (
     (25.0, "moderate"),
 )
 _CORRIDOR_MAX_GAP_DEGREES = 0.02
+_CALIBRATION_MIN_HISTORY = 5
+_CALIBRATION_OFFPEAK_START = 2
+_CALIBRATION_OFFPEAK_END = 5
 _OUTPUT_PREFIX = "output/"
 
 # Cache for parsed analysis records keyed by the data directory's mtime so
@@ -433,6 +436,40 @@ def _build_corridor_segments(summaries: list[dict[str, Any]]) -> list[dict[str, 
                 }
             )
     return segments
+
+
+def _overview_calibration_summary(store: JsonStore) -> dict[str, Any]:
+    manifest_camera_ids = [
+        str(camera.get("cam_id"))
+        for camera in _load_manifest_cameras()
+        if camera.get("cam_id")
+    ]
+    camera_ids = manifest_camera_ids or [
+        str(camera.get("camera_id"))
+        for camera in build_camera_summaries(store=store)
+        if camera.get("camera_id")
+    ]
+    summary = summarize_calibration_coverage(
+        camera_ids,
+        Path(getattr(store, "root_dir", Path("data"))),
+        Path(os.getenv("CAMERA_SPEED_CALIBRATION_PATH", "config/camera_speed_calibration.json")),
+        min_history=_CALIBRATION_MIN_HISTORY,
+        offpeak_start=_CALIBRATION_OFFPEAK_START,
+        offpeak_end=_CALIBRATION_OFFPEAK_END,
+    )
+    status_counts = dict(summary.get("status_counts") or {})
+    return {
+        "configured": int(summary.get("configured_count") or 0),
+        "missing": int(summary.get("missing_count") or 0),
+        "ready": int(status_counts.get("ready") or 0),
+        "insufficient_history": int(status_counts.get("insufficient_history") or 0),
+        "missing_motion_history": int(status_counts.get("missing_motion_history") or 0),
+        "no_offpeak_history": int(status_counts.get("no_offpeak_history") or 0),
+        "no_history": int(status_counts.get("no_history") or 0),
+        "offpeak_hours": summary.get("offpeak_hours"),
+        "min_history": int(summary.get("min_history") or _CALIBRATION_MIN_HISTORY),
+        "next_ready_camera_ids": list((summary.get("status_camera_ids") or {}).get("ready", []))[:5],
+    }
 
 
 _MANIFEST_PATH = Path(os.getenv("CAMERA_MANIFEST_PATH", "data/manifest.json"))
@@ -785,8 +822,11 @@ def update_camera_position(camera_id: str, payload: dict[str, Any]) -> dict[str,
 @router.get("/overview")
 def get_overview(store: Any = None) -> dict[str, Any]:
     """City-wide congestion overview for the dashboard header cards."""
+    if store is None:
+        store = JsonStore("data")
     summaries = build_camera_summaries(store=store)
     corridor_segments = _build_corridor_segments(summaries)
+    calibration_summary = _overview_calibration_summary(store)
     counts = {"light": 0, "moderate": 0, "heavy": 0, "blocked": 0, "unknown": 0}
     scores: list[float] = []
     for cam in summaries:
@@ -809,6 +849,7 @@ def get_overview(store: Any = None) -> dict[str, Any]:
         "density_counts": {k: v for k, v in counts.items() if k != "unknown"} | {"unknown": counts["unknown"]},
         "average_score": round(sum(scores) / len(scores), 2) if scores else None,
         "corridor_segments": corridor_segments,
+        "calibration_summary": calibration_summary,
         "worst_cameras": [
             {
                 "camera_id": c.get("camera_id"),

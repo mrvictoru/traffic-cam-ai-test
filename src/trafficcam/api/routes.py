@@ -394,7 +394,11 @@ def _load_camera_corridors(path: str | Path | None = None) -> list[dict[str, Any
     corridors = payload.get("corridors") if isinstance(payload, dict) else None
     if not isinstance(corridors, list):
         return []
-    return [corridor for corridor in corridors if isinstance(corridor, dict)]
+    return [
+        corridor
+        for corridor in corridors
+        if isinstance(corridor, dict) and corridor.get("enabled", True)
+    ]
 
 
 def _build_corridor_segments(

@@ -459,6 +459,7 @@ Status as of 2026-08-26:
 - [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
 - [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
+- [x] catalog four additional named-road candidates (Guia Tunnel, Sai Van Bridge, Qingmao Port, and Avenida do Ouvidor Arriaga) as disabled until their camera positions and road order are verified
 - [ ] verify road geometry and expand `config/camera_corridors.json` for the remaining cameras
 - [ ] continue the API/UI polish and richer dashboard integration for drill-down and camera detail views
 - [ ] add more end-to-end coverage around live camera coordinates, map rendering, and UI response flows

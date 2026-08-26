@@ -25,6 +25,42 @@
       "camera_ids": ["49", "50"],
       "source": "camera_coordinates.json and DSAT manifest names",
       "notes": "Adjacent junction cameras on Avenida da Praia Grande / Nam Van area; treated as a first-pass corridor pending road-geometry verification."
+    },
+    {
+      "corridor_id": "guia-tunnel",
+      "name": "Guia Tunnel",
+      "district": "澳門區",
+      "camera_ids": ["69", "70"],
+      "enabled": false,
+      "source": "DSAT manifest names",
+      "notes": "Named tunnel portal pair. Enable after both camera positions are verified."
+    },
+    {
+      "corridor_id": "sai-van-bridge",
+      "name": "Sai Van Bridge",
+      "district": "跨海大橋",
+      "camera_ids": ["63", "64"],
+      "enabled": false,
+      "source": "DSAT manifest names",
+      "notes": "Named bridge approach pair. Lower-deck cameras should be modeled separately after verified geometry is available."
+    },
+    {
+      "corridor_id": "qingmao-port",
+      "name": "Qingmao Port",
+      "district": "口岸",
+      "camera_ids": ["123", "124"],
+      "enabled": false,
+      "source": "DSAT manifest names",
+      "notes": "Named port facility camera pair. Enable after traffic direction and both positions are verified."
+    },
+    {
+      "corridor_id": "ouvidor-arriaga-avenue",
+      "name": "Avenida do Ouvidor Arriaga",
+      "district": "澳門區",
+      "camera_ids": ["65", "114", "115", "116"],
+      "enabled": false,
+      "source": "DSAT manifest names",
+      "notes": "Same named arterial at successive intersections. Camera order and coordinates require verification before rendering."
     }
   ]
 }

@@ -354,6 +354,29 @@ def test_get_overview_omits_unconfigured_corridors(tmp_path: Path) -> None:
     assert calibration["next_ready_camera_ids"] == []
 
 
+def test_get_overview_omits_disabled_corridors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = JsonStore(tmp_path)
+    _seed_analysis(store, "cam1")
+    _seed_analysis(store, "cam2", latitude=22.196, longitude=113.56)
+    corridor_path = tmp_path / "camera_corridors.json"
+    corridor_path.write_text(
+        json.dumps(
+            {
+                "corridors": [
+                    {"corridor_id": "disabled", "camera_ids": ["cam1", "cam2"], "enabled": False}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CAMERA_CORRIDORS_PATH", str(corridor_path))
+
+    module = reload(routes)
+    overview = module.get_overview(store=store)
+
+    assert overview["corridor_segments"] == []
+
+
 def test_get_overview_reports_calibration_readiness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(

@@ -197,7 +197,7 @@ def test_run_pipeline_persists_analysis_and_incidents(tmp_path: Path) -> None:
     assert (tmp_path / "data" / "analyses" / "1001").exists()
     analysis_files = sorted((tmp_path / "data" / "analyses" / "1001").glob("*.json"))
     saved_record = json.loads(analysis_files[-1].read_text(encoding="utf-8"))
-    assert saved_record["details"]["capture_result"]["sample_fps"] == 1.0
+    assert saved_record["details"]["capture_result"]["sample_fps"] == 5.0
     assert saved_record["details"]["capture_result"]["warmup_seconds"] == 0.0
 
 

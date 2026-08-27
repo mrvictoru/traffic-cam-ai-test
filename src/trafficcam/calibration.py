@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trafficcam.config import settings
 
@@ -18,13 +19,17 @@ _FREEFLOW_PCT = 95.0
 
 # Records older than this have no motion fields; they cannot be calibrated.
 _SPEED_FIELD = "median_speed_px_per_frame"
+_MACAU_TIMEZONE = ZoneInfo("Asia/Macau")
 
 
 def _parse_captured_at(value: str) -> datetime | None:
     try:
         if value.endswith("Z"):
             value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
+        captured_at = datetime.fromisoformat(value)
+        if captured_at.tzinfo is None:
+            return captured_at.replace(tzinfo=_MACAU_TIMEZONE)
+        return captured_at.astimezone(_MACAU_TIMEZONE)
     except ValueError:
         return None
 

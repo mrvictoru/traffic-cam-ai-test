@@ -455,7 +455,12 @@ Status as of 2026-08-27:
 - [x] the dashboard work is active on the current branch and includes camera map editing, dashboard summary cards, and route-level detail panels
 - [x] the API and dashboard now include a lightweight corridor overlay derived from nearby cameras in the same district/sub-district cluster
 - [x] `/api/overview` exposes a `calibration_summary` block and the dashboard shows configured/ready/need-history counts so rollout progress is visible at a glance
-- [x] an `audit-config` pass over all 9,646 persisted records confirmed none predate the speed-aware pipeline commit, so live motion collection is the gating factor for backfill — not code
+- [x] an `audit-config` pass confirmed all 9,646 legacy records predate the speed-aware pipeline commit, so fresh live motion collection is the gating factor for backfill — not code
+- [x] rebuild the service with CPU-only Torch wheels and verify CUDA is not installed or selected
+- [x] validate live speed capture on camera 51; sparse ByteTrack bursts produced no identities, while the simple tracker at 5 FPS produced a `9.53 px/frame` motion sample
+- [x] set the sparse-burst defaults to the simple tracker and 5 FPS while keeping Supervision available as an explicit override
+- [x] apply the 02:00-05:00 calibration window in `Asia/Macau` local time instead of comparing UTC `Z` timestamps directly
+- [x] add direct Leaflet-page render coverage for corridor and calibration payloads
 - [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
 - [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
@@ -510,8 +515,8 @@ can be computed — no code change can backfill from this history.
 
 The manual rollout loop is now:
 
-1. rebuild/refresh the Docker image so runs use the current speed-aware pipeline;
-2. run scheduled capture cycles across off-peak hours (02:00–05:00 local) so each camera accumulates at least `--min-history` (default 5) usable motion samples;
+1. use the rebuilt CPU-only Docker image and current simple-tracker/5-FPS defaults;
+2. run scheduled capture cycles across off-peak hours (02:00–05:00 Macau local time, equivalent to 18:00–21:00 UTC on the previous date) so each camera accumulates at least `--min-history` (default 5) usable motion samples;
 3. run `python -m trafficcam.cli calibrate-freeflow --data-dir data --dry-run` to preview which cameras are ready, then drop `--dry-run` to persist values into `config/camera_speed_calibration.json`;
 4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` climbs and the dashboard's calibration cards reflect it.
 

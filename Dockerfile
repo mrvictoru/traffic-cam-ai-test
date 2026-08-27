@@ -3,15 +3,17 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision
 RUN pip install --no-cache-dir \
     pytest fastapi "uvicorn[standard]" \
     transformers \
     "supervision>=0.25.0" \
-    ultralytics \
-    torch torchvision \
+    matplotlib polars psutil PyYAML requests scipy ultralytics-thop \
     opencv-python-headless \
     numpy \
     Pillow
+RUN pip install --no-cache-dir --no-deps ultralytics
 
 # Copy application files
 COPY macau_dsat_feed.py ./

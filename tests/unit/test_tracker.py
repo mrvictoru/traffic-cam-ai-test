@@ -171,3 +171,18 @@ def test_build_tracker_falls_back_to_simple_when_supervision_missing(monkeypatch
 
     tracker = build_tracker(frame_rate=1.0)
     assert isinstance(tracker, SimpleTracker)
+
+
+def test_build_tracker_uses_simple_backend_when_configured(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "trafficcam.vision.tracker.settings",
+        SimpleNamespace(
+            tracker_backend="simple",
+            tracker_iou_threshold=0.3,
+            tracker_max_age=5,
+        ),
+    )
+
+    tracker = build_tracker(frame_rate=5.0)
+
+    assert isinstance(tracker, SimpleTracker)

@@ -403,7 +403,8 @@ def test_get_overview_reports_calibration_readiness(tmp_path: Path, monkeypatch:
             f"analyses/50/{index:03d}.json",
             {
                 "camera_id": "50",
-                "captured_at": f"2026-06-24T02:0{index}:00Z",
+                # 18:xx UTC is 02:xx the following day in Macau.
+                "captured_at": f"2026-06-23T18:0{index}:00Z",
                 "label": "moderate",
                 "details": {
                     "density": "moderate",

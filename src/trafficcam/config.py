@@ -82,7 +82,9 @@ class Settings:
     scene_low_visibility_edge_max: float = float(os.getenv("SCENE_LOW_VISIBILITY_EDGE", "0.05"))
 
     # Simple tracker settings (IoU-based)
-    tracker_backend: str = os.getenv("TRACKER_BACKEND", "auto")
+    # Sparse traffic-camera bursts do not provide enough consecutive detections
+    # for ByteTrack to activate reliably; the IoU tracker retains short gaps.
+    tracker_backend: str = os.getenv("TRACKER_BACKEND", "simple")
     tracker_iou_threshold: float = float(os.getenv("TRACKER_IOU", "0.3"))
     tracker_max_age: int = int(os.getenv("TRACKER_MAX_AGE", "5"))
     supervision_track_activation_threshold: float = float(
@@ -103,7 +105,7 @@ class Settings:
     # Periodic capture
     capture_interval_seconds: float = float(os.getenv("CAPTURE_INTERVAL", "60.0"))
     capture_max_cycles: int | None = int(os.getenv("CAPTURE_MAX_CYCLES", "0")) or None
-    capture_burst_fps: float = float(os.getenv("CAPTURE_BURST_FPS", "1.0"))
+    capture_burst_fps: float = float(os.getenv("CAPTURE_BURST_FPS", "5.0"))
     capture_warmup_seconds: float = float(os.getenv("CAPTURE_WARMUP_SECONDS", "0.0"))
     roi_config_path: str = os.getenv("ROI_CONFIG_PATH", "config/camera_rois.json")
     roi_filter_enabled: bool = os.getenv("ROI_FILTER_ENABLED", "1").strip() in {"1", "true", "yes", "on"}

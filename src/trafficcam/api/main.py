@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 
-from trafficcam.api.routes import router
+from trafficcam.api.routes import router, warm_dashboard_cache
 from trafficcam.web.map_page import render_map_page
 
 
@@ -44,6 +44,7 @@ def _live_loop_kwargs() -> dict[str, object]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the live capture loop alongside the dashboard when enabled."""
+    warm_dashboard_cache()
     if _autostart_enabled():
         def _live_loop() -> None:
             from trafficcam.config import settings

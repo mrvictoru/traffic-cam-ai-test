@@ -1,3 +1,6 @@
+import asyncio
+
+import trafficcam.api.main as api_main
 from trafficcam.api.main import _autostart_enabled, _autostart_limit, _live_loop_kwargs, app, dashboard, health
 
 
@@ -21,6 +24,18 @@ def test_dashboard_endpoint_returns_html() -> None:
 
 def test_health_endpoint_returns_ok() -> None:
     assert health() == {"status": "ok"}
+
+
+def test_lifespan_warms_dashboard_cache(monkeypatch) -> None:
+    calls = []
+    monkeypatch.delenv("PIPELINE_AUTOSTART", raising=False)
+    monkeypatch.setattr(api_main, "warm_dashboard_cache", lambda: calls.append("warm"))
+
+    async def _run_lifespan() -> None:
+        async with api_main.lifespan(app):
+            assert calls == ["warm"]
+
+    asyncio.run(_run_lifespan())
 
 
 def test_autostart_helpers_use_defaults(monkeypatch) -> None:

@@ -1,29 +1,46 @@
+x-runtime-environment: &runtime-environment
+  PIPELINE_MANIFEST_FILE: ${PIPELINE_MANIFEST_FILE:-data/manifest.json}
+  PIPELINE_OUTPUT_DIR: ${PIPELINE_OUTPUT_DIR:-output/live}
+  PIPELINE_DATA_DIR: ${PIPELINE_DATA_DIR:-data}
+  TRACKER_BACKEND: ${TRACKER_BACKEND:-simple}
+  CAPTURE_BURST_FPS: ${CAPTURE_BURST_FPS:-5.0}
+  MODEL_CACHE_DIR: /app/model-cache
+  HF_HOME: /app/model-cache/huggingface
+  TRANSFORMERS_CACHE: /app/model-cache/huggingface
+  ULTRALYTICS_HOME: /app/model-cache/ultralytics
+  YOLO_CONFIG_DIR: /app/model-cache/ultralytics/config
+
+x-runtime-volumes: &runtime-volumes
+  - .:/app
+  - ./model-cache:/app/model-cache
+
 services:
   macau-feed:
     build: .
     ports:
       - "8000:8000"
     environment:
-      PIPELINE_AUTOSTART: "1"
-      PIPELINE_MANIFEST_FILE: ${PIPELINE_MANIFEST_FILE:-data/manifest.json}
-      PIPELINE_OUTPUT_DIR: ${PIPELINE_OUTPUT_DIR:-output/live}
-      PIPELINE_DATA_DIR: ${PIPELINE_DATA_DIR:-data}
-      PIPELINE_LIMIT: ${PIPELINE_LIMIT:-30}
-      TRACKER_BACKEND: ${TRACKER_BACKEND:-simple}
-      CAPTURE_BURST_FPS: ${CAPTURE_BURST_FPS:-5.0}
-      MODEL_CACHE_DIR: /app/model-cache
-      HF_HOME: /app/model-cache/huggingface
-      TRANSFORMERS_CACHE: /app/model-cache/huggingface
-      ULTRALYTICS_HOME: /app/model-cache/ultralytics
-      YOLO_CONFIG_DIR: /app/model-cache/ultralytics/config
-    volumes:
-      - .:/app
-      - ./model-cache:/app/model-cache
+      <<: *runtime-environment
+      PIPELINE_AUTOSTART: "0"
+    volumes: *runtime-volumes
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
-    # Override the default command/args if needed
-    # Uncomment and modify to pass custom arguments:
-    # command: ["discover", "--limit", "5"]
-    #
-    # Or run tests:
-    # command: ["-m", "pytest", "-q", "tests/unit"]
 
+  live-capture:
+    profiles: ["capture"]
+    build: .
+    environment: *runtime-environment
+    volumes: *runtime-volumes
+    command:
+      - run-loop
+      - --manifest-file
+      - ${PIPELINE_MANIFEST_FILE:-data/manifest.json}
+      - --output-dir
+      - ${PIPELINE_OUTPUT_DIR:-output/live}
+      - --data-dir
+      - ${PIPELINE_DATA_DIR:-data}
+      - --frame-count
+      - ${PIPELINE_FRAME_COUNT:-5}
+      - --limit
+      - ${PIPELINE_LIMIT:-30}
+      - --interval
+      - ${PIPELINE_INTERVAL:-300}

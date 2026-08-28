@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from trafficcam.calibration import calibrate, summarize_calibration_coverage
+from trafficcam.calibration import build_human_calibration, calibrate, summarize_calibration_coverage
 from trafficcam.config import settings
 from trafficcam.capture.frame_capturer import FrameCapturer
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
@@ -94,6 +94,15 @@ def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
     speed_calibration_ids = _load_threshold_ids(args.calibration_file)
     roi_ids = _load_plain_object_ids(args.rois_file)
     flow_line_ids = _load_plain_object_ids(args.flow_lines_file)
+    corridors_payload = _load_json(args.corridors_file)
+    corridors = corridors_payload.get("corridors") if isinstance(corridors_payload, dict) else None
+    corridor_entries = [entry for entry in corridors or [] if isinstance(entry, dict)]
+    enabled_corridor_count = sum(1 for entry in corridor_entries if entry.get("enabled", True))
+    disabled_corridor_names = [
+        str(entry.get("name") or entry.get("corridor_id") or "unnamed")
+        for entry in corridor_entries
+        if not entry.get("enabled", True)
+    ]
 
     missing_coordinates = sorted(manifest_set - coordinate_ids, key=_camera_sort_key)
     missing_thresholds = sorted(manifest_set - threshold_ids, key=_camera_sort_key)
@@ -169,12 +178,25 @@ def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
         },
         "next_calibration_queue": queue_entries[:queue_limit],
         "speed_calibration": calibration_coverage,
+        "human_calibration": build_human_calibration(
+            camera_count=len(manifest_camera_ids),
+            missing_coordinates=len(missing_coordinates),
+            missing_rois=len(missing_rois),
+            missing_flow_lines=len(missing_flow_lines),
+            disabled_corridor_names=disabled_corridor_names,
+            enabled_corridor_count=enabled_corridor_count,
+            calibration_summary=calibration_coverage,
+            offpeak_start=int(args.calibration_offpeak_start),
+            offpeak_end=int(args.calibration_offpeak_end),
+            min_history=int(args.calibration_min_history),
+        ),
         "config_files": {
             "coordinates": str(args.coordinates_file),
             "thresholds": str(args.thresholds_file),
             "speed_calibration": str(args.calibration_file),
             "rois": str(args.rois_file),
             "flow_lines": str(args.flow_lines_file),
+            "corridors": str(args.corridors_file),
         },
     }
 
@@ -243,6 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit_config.add_argument("--calibration-offpeak-end", type=int, default=5)
     audit_config.add_argument("--rois-file", default=settings.roi_config_path)
     audit_config.add_argument("--flow-lines-file", default=settings.flow_line_config_path)
+    audit_config.add_argument("--corridors-file", default=settings.camera_corridors_path)
     audit_config.add_argument("--report-file", default=None)
     audit_config.add_argument("--queue-limit", type=int, default=20)
     audit_config.add_argument("--pretty", action="store_true")

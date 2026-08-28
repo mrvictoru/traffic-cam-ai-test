@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from trafficcam.calibration import load_camera_calibrations, summarize_calibration_coverage
+from trafficcam.calibration import (
+    build_human_calibration,
+    load_camera_calibrations,
+    summarize_calibration_coverage,
+)
 from trafficcam.storage.json_store import JsonStore
 
 router = APIRouter()
@@ -90,26 +96,39 @@ _CALIBRATION_MIN_HISTORY = 5
 _CALIBRATION_OFFPEAK_START = 2
 _CALIBRATION_OFFPEAK_END = 5
 _OUTPUT_PREFIX = "output/"
+_LIVE_MAX_AGE_MINUTES = 20
 
-# Cache for parsed analysis records keyed by the data directory's mtime so
-# repeated API requests don't re-parse every JSON file on disk.
+# Caches are keyed by analysis-directory mtimes. Creating a record updates its
+# camera directory, avoiding a recursive stat of every historical JSON file.
 _ANALYSES_CACHE: dict[str, Any] = {"key": None, "records": None}
+_LATEST_ANALYSES_CACHE: dict[str, Any] = {"key": None, "records": None}
+_CALIBRATION_SUMMARY_CACHE: dict[str, Any] = {
+    "key": None,
+    "summary": None,
+    "refreshing_key": None,
+}
+_CALIBRATION_SUMMARY_LOCK = threading.Lock()
 
 
-def _data_dir_signature(store: JsonStore) -> tuple[str, float] | None:
+def _data_dir_signature(store: JsonStore) -> tuple[str, int, int]:
     root = Path(getattr(store, "root_dir", Path("data")))
+    analyses_root = root / "analyses"
     try:
-        resolved = root.resolve()
-        latest_mtime = 0.0
-        for path in resolved.rglob("*"):
-            if path.is_file():
+        resolved = analyses_root.resolve()
+        latest_mtime = analyses_root.stat().st_mtime_ns if analyses_root.exists() else 0
+        camera_count = 0
+        if analyses_root.is_dir():
+            for path in analyses_root.iterdir():
+                if not path.is_dir():
+                    continue
+                camera_count += 1
                 try:
                     latest_mtime = max(latest_mtime, path.stat().st_mtime_ns)
                 except OSError:
                     continue
-        return (str(resolved), latest_mtime)
+        return (str(resolved), camera_count, latest_mtime)
     except OSError:
-        return (str(Path("data").resolve()), 0.0)
+        return (str(analyses_root), 0, 0)
 
 
 def _load_analyses(store: JsonStore) -> list[dict[str, Any]]:
@@ -124,6 +143,48 @@ def _load_analyses(store: JsonStore) -> list[dict[str, Any]]:
     if signature is not None:
         _ANALYSES_CACHE["key"] = signature
         _ANALYSES_CACHE["records"] = records
+    return records
+
+
+def _record_path_sort_key(path: Path) -> tuple[str, int]:
+    timestamp, separator, suffix = path.stem.partition("_")
+    return timestamp, int(suffix) if separator and suffix.isdigit() else 0
+
+
+def _load_latest_analysis_from_dir(camera_dir: Path) -> dict[str, Any] | None:
+    record_paths = sorted(
+        (path for path in camera_dir.glob("*.json") if path.is_file()),
+        key=_record_path_sort_key,
+        reverse=True,
+    )
+    for path in record_paths:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _load_latest_analyses(store: JsonStore) -> list[dict[str, Any]]:
+    signature = _data_dir_signature(store)
+    if (
+        _LATEST_ANALYSES_CACHE["key"] == signature
+        and _LATEST_ANALYSES_CACHE["records"] is not None
+    ):
+        return _LATEST_ANALYSES_CACHE["records"]
+
+    analyses_root = Path(getattr(store, "root_dir", Path("data"))) / "analyses"
+    records: list[dict[str, Any]] = []
+    if analyses_root.is_dir():
+        for camera_dir in analyses_root.iterdir():
+            if not camera_dir.is_dir():
+                continue
+            record = _load_latest_analysis_from_dir(camera_dir)
+            if record is not None:
+                records.append(record)
+
+    _LATEST_ANALYSES_CACHE["key"] = signature
+    _LATEST_ANALYSES_CACHE["records"] = records
     return records
 
 
@@ -353,6 +414,57 @@ def _calibration_status(camera_id: str, calibrations: dict[str, dict[str, Any]])
     }
 
 
+def _traffic_reliability(
+    captured_at: Any,
+    score: Any,
+    calibration: dict[str, Any],
+    mean_confidence: Any = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    observed_at: datetime | None = None
+    if captured_at:
+        try:
+            value = str(captured_at)
+            observed_at = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            observed_at = None
+
+    current_time = now or datetime.now(timezone.utc)
+    age_minutes = None
+    if observed_at is not None:
+        age_minutes = max(0, int((current_time - observed_at.astimezone(timezone.utc)).total_seconds() // 60))
+
+    has_score = isinstance(score, (int, float))
+    is_live = has_score and age_minutes is not None and age_minutes <= _LIVE_MAX_AGE_MINUTES
+    is_calibrated = bool(calibration.get("is_calibrated"))
+    if not has_score:
+        level = "unavailable"
+        reason = "No analyzed traffic observation"
+    elif not is_live:
+        level = "stale"
+        reason = f"Last observation is {age_minutes} minutes old" if age_minutes is not None else "Observation time is unknown"
+    elif not is_calibrated:
+        level = "provisional"
+        reason = "Live observation, but this camera has no free-flow calibration"
+    elif isinstance(mean_confidence, (int, float)) and float(mean_confidence) < 0.4:
+        level = "low_confidence"
+        reason = "Live calibrated observation with low detection confidence"
+    else:
+        level = "reliable"
+        reason = "Live calibrated observation"
+    return {
+        "level": level,
+        "reason": reason,
+        "is_live": is_live,
+        "is_calibrated": is_calibrated,
+        "age_minutes": age_minutes,
+        "max_live_age_minutes": _LIVE_MAX_AGE_MINUTES,
+    }
+
+
 def _density_from_score(score: float | None) -> str:
     if score is None:
         return "unknown"
@@ -385,7 +497,7 @@ def _distance_sq(left: tuple[float, float], right: tuple[float, float]) -> float
     return ((left[0] - right[0]) ** 2) + ((left[1] - right[1]) ** 2)
 
 
-def _load_camera_corridors(path: str | Path | None = None) -> list[dict[str, Any]]:
+def _load_all_camera_corridors(path: str | Path | None = None) -> list[dict[str, Any]]:
     target = Path(path or os.getenv("CAMERA_CORRIDORS_PATH", "config/camera_corridors.json"))
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
@@ -394,11 +506,60 @@ def _load_camera_corridors(path: str | Path | None = None) -> list[dict[str, Any
     corridors = payload.get("corridors") if isinstance(payload, dict) else None
     if not isinstance(corridors, list):
         return []
+    return [corridor for corridor in corridors if isinstance(corridor, dict)]
+
+
+def _load_camera_corridors(path: str | Path | None = None) -> list[dict[str, Any]]:
     return [
         corridor
-        for corridor in corridors
-        if isinstance(corridor, dict) and corridor.get("enabled", True)
+        for corridor in _load_all_camera_corridors(path)
+        if corridor.get("enabled", True)
     ]
+
+
+def _mapping_ids(path: Path, nested_key: str | None = None) -> set[str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if nested_key:
+        payload = payload.get(nested_key) if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return set()
+    return {
+        str(key)
+        for key, value in payload.items()
+        if isinstance(value, (dict, list, int, float, str))
+    }
+
+
+def _overview_human_calibration(
+    camera_ids: list[str],
+    calibration_summary: dict[str, Any],
+) -> dict[str, Any]:
+    camera_id_set = {str(camera_id) for camera_id in camera_ids if camera_id}
+    coordinate_ids = set(_load_camera_coordinates())
+    roi_ids = _mapping_ids(Path(os.getenv("ROI_CONFIG_PATH", "config/camera_rois.json")))
+    flow_line_ids = _mapping_ids(Path(os.getenv("FLOW_LINE_CONFIG_PATH", "config/camera_flow_lines.json")))
+    corridors = _load_all_camera_corridors()
+    enabled = [corridor for corridor in corridors if corridor.get("enabled", True)]
+    disabled_names = [
+        str(corridor.get("name") or corridor.get("corridor_id") or "unnamed")
+        for corridor in corridors
+        if not corridor.get("enabled", True)
+    ]
+    return build_human_calibration(
+        camera_count=len(camera_id_set),
+        missing_coordinates=len(camera_id_set - coordinate_ids),
+        missing_rois=len(camera_id_set - roi_ids),
+        missing_flow_lines=len(camera_id_set - flow_line_ids),
+        disabled_corridor_names=disabled_names,
+        enabled_corridor_count=len(enabled),
+        calibration_summary=calibration_summary,
+        offpeak_start=_CALIBRATION_OFFPEAK_START,
+        offpeak_end=_CALIBRATION_OFFPEAK_END,
+        min_history=_CALIBRATION_MIN_HISTORY,
+    )
 
 
 def _build_corridor_segments(
@@ -425,6 +586,15 @@ def _build_corridor_segments(
             ]
             average_score = round(sum(scores) / len(scores), 2) if scores else None
             density = _density_from_score(average_score)
+            reliability_levels = {
+                str((camera.get("traffic_reliability") or {}).get("level") or "unavailable")
+                for camera in (left, right)
+            }
+            is_live = all(
+                bool((camera.get("traffic_reliability") or {}).get("is_live"))
+                for camera in (left, right)
+            )
+            is_reliable = reliability_levels == {"reliable"}
             segments.append(
                 {
                     "segment_id": f"{corridor_name}:{segment_index}",
@@ -437,6 +607,13 @@ def _build_corridor_segments(
                     "end": {"latitude": right_point[0], "longitude": right_point[1]},
                     "average_score": average_score,
                     "density": density,
+                    "is_live": is_live,
+                    "reliability": "reliable" if is_reliable else ("provisional" if is_live else "stale"),
+                    "latest_captured_at": max(
+                        (str(camera.get("latest_captured_at") or "") for camera in (left, right)),
+                        default="",
+                    )
+                    or None,
                     "is_approximate": any(
                         ((camera.get("map_position") or {}).get("source") or "approximate") != "coordinates"
                         for camera in (left, right)
@@ -446,25 +623,7 @@ def _build_corridor_segments(
     return segments
 
 
-def _overview_calibration_summary(store: JsonStore) -> dict[str, Any]:
-    manifest_camera_ids = [
-        str(camera.get("cam_id"))
-        for camera in _load_manifest_cameras()
-        if camera.get("cam_id")
-    ]
-    camera_ids = manifest_camera_ids or [
-        str(camera.get("camera_id"))
-        for camera in build_camera_summaries(store=store)
-        if camera.get("camera_id")
-    ]
-    summary = summarize_calibration_coverage(
-        camera_ids,
-        Path(getattr(store, "root_dir", Path("data"))),
-        Path(os.getenv("CAMERA_SPEED_CALIBRATION_PATH", "config/camera_speed_calibration.json")),
-        min_history=_CALIBRATION_MIN_HISTORY,
-        offpeak_start=_CALIBRATION_OFFPEAK_START,
-        offpeak_end=_CALIBRATION_OFFPEAK_END,
-    )
+def _format_calibration_summary(summary: dict[str, Any], *, refreshing: bool = False) -> dict[str, Any]:
     status_counts = dict(summary.get("status_counts") or {})
     return {
         "configured": int(summary.get("configured_count") or 0),
@@ -477,7 +636,95 @@ def _overview_calibration_summary(store: JsonStore) -> dict[str, Any]:
         "offpeak_hours": summary.get("offpeak_hours"),
         "min_history": int(summary.get("min_history") or _CALIBRATION_MIN_HISTORY),
         "next_ready_camera_ids": list((summary.get("status_camera_ids") or {}).get("ready", []))[:5],
+        "refreshing": refreshing,
     }
+
+
+def _refresh_calibration_summary(
+    signature: tuple[str, int, int],
+    camera_ids: list[str],
+    data_dir: Path,
+    config_path: Path,
+) -> None:
+    try:
+        summary = summarize_calibration_coverage(
+            camera_ids,
+            data_dir,
+            config_path,
+            min_history=_CALIBRATION_MIN_HISTORY,
+            offpeak_start=_CALIBRATION_OFFPEAK_START,
+            offpeak_end=_CALIBRATION_OFFPEAK_END,
+        )
+        with _CALIBRATION_SUMMARY_LOCK:
+            _CALIBRATION_SUMMARY_CACHE["key"] = signature
+            _CALIBRATION_SUMMARY_CACHE["summary"] = summary
+    finally:
+        with _CALIBRATION_SUMMARY_LOCK:
+            _CALIBRATION_SUMMARY_CACHE["refreshing_key"] = None
+
+
+def _overview_calibration_summary(
+    store: JsonStore,
+    *,
+    wait_for_refresh: bool = True,
+) -> dict[str, Any]:
+    manifest_camera_ids = [
+        str(camera.get("cam_id"))
+        for camera in _load_manifest_cameras()
+        if camera.get("cam_id")
+    ]
+    camera_ids = manifest_camera_ids or [
+        str(camera.get("camera_id"))
+        for camera in build_camera_summaries(store=store)
+        if camera.get("camera_id")
+    ]
+    signature = _data_dir_signature(store)
+    data_dir = Path(getattr(store, "root_dir", Path("data")))
+    config_path = Path(
+        os.getenv("CAMERA_SPEED_CALIBRATION_PATH", "config/camera_speed_calibration.json")
+    )
+    with _CALIBRATION_SUMMARY_LOCK:
+        if (
+            _CALIBRATION_SUMMARY_CACHE["key"] == signature
+            and _CALIBRATION_SUMMARY_CACHE["summary"] is not None
+        ):
+            return _format_calibration_summary(_CALIBRATION_SUMMARY_CACHE["summary"])
+
+    if wait_for_refresh:
+        _refresh_calibration_summary(signature, camera_ids, data_dir, config_path)
+        with _CALIBRATION_SUMMARY_LOCK:
+            return _format_calibration_summary(_CALIBRATION_SUMMARY_CACHE["summary"])
+
+    with _CALIBRATION_SUMMARY_LOCK:
+        if _CALIBRATION_SUMMARY_CACHE["refreshing_key"] != signature:
+            _CALIBRATION_SUMMARY_CACHE["refreshing_key"] = signature
+            threading.Thread(
+                target=_refresh_calibration_summary,
+                args=(signature, camera_ids, data_dir, config_path),
+                name="trafficcam-calibration-summary",
+                daemon=True,
+            ).start()
+        previous = _CALIBRATION_SUMMARY_CACHE["summary"]
+
+    if previous is not None:
+        return _format_calibration_summary(previous, refreshing=True)
+    configured = load_camera_calibrations(config_path)
+    return _format_calibration_summary(
+        {
+            "configured_count": len(set(camera_ids) & set(configured)),
+            "missing_count": len(set(camera_ids) - set(configured)),
+            "min_history": _CALIBRATION_MIN_HISTORY,
+            "offpeak_hours": f"{_CALIBRATION_OFFPEAK_START:02d}-{_CALIBRATION_OFFPEAK_END:02d}",
+        },
+        refreshing=True,
+    )
+
+
+def warm_dashboard_cache() -> None:
+    """Load latest camera records before the API reports startup complete."""
+    store = JsonStore("data")
+    _load_latest_analyses(store)
+    _overview_calibration_summary(store, wait_for_refresh=False)
 
 
 _MANIFEST_PATH = Path(os.getenv("CAMERA_MANIFEST_PATH", "data/manifest.json"))
@@ -512,7 +759,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
 
     coordinates = _load_camera_coordinates()
     calibrations = load_camera_calibrations()
-    analyses = _load_analyses(store)
+    analyses = _load_latest_analyses(store)
     # Seed grouped entries from the manifest first. Analysis records below
     # enrich these entries; cameras without any history stay visible.
     manifest_cameras = {
@@ -539,6 +786,8 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             "density_rank": _DENSITY_PRIORITY["unknown"],
             "map_position": None,
             "calibration": _calibration_status(cam_id, calibrations),
+            "latest_mean_confidence": None,
+            "traffic_reliability": None,
         }
     for analysis in analyses:
         camera_id = analysis.get("camera_id") or "unknown"
@@ -566,6 +815,8 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 "density_rank": _DENSITY_PRIORITY["unknown"],
                 "map_position": None,
                 "calibration": _calibration_status(camera_id, calibrations),
+                "latest_mean_confidence": None,
+                "traffic_reliability": None,
             },
         )
         if not existing.get("name"):
@@ -587,6 +838,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             existing["latest_label"] = analysis.get("label")
             existing["latest_congestion_score"] = details.get("congestion_score")
             existing["latest_vehicle_count"] = details.get("vehicle_count")
+            existing["latest_mean_confidence"] = details.get("mean_confidence")
             existing["latest_flow_total"] = total_flow.get("total")
             existing["latest_flow_split"] = total_flow if total_flow else None
             existing["density_rank"] = _DENSITY_PRIORITY.get(str(density).lower(), _DENSITY_PRIORITY["unknown"])
@@ -598,6 +850,12 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 capture_result,
                 coordinates,
             )
+            existing["traffic_reliability"] = _traffic_reliability(
+                captured_at,
+                details.get("congestion_score"),
+                existing["calibration"],
+                details.get("mean_confidence"),
+            )
         if existing.get("latitude") is None and existing.get("map_position"):
             position = existing["map_position"]
             if position.get("latitude") is not None and position.get("longitude") is not None:
@@ -607,6 +865,13 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
     # Ensure manifest-only cameras (no analysis records yet) also get map
     # positions so they appear on the dashboard immediately after discovery.
     for camera_id, existing in grouped.items():
+        if existing.get("traffic_reliability") is None:
+            existing["traffic_reliability"] = _traffic_reliability(
+                existing.get("latest_captured_at"),
+                existing.get("latest_congestion_score"),
+                existing["calibration"],
+                existing.get("latest_mean_confidence"),
+            )
         if existing.get("map_position") is not None:
             continue
         existing["map_position"] = _build_map_position(
@@ -627,14 +892,10 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
 
 def _latest_analysis_for_camera(store: Any, camera_id: str) -> dict[str, Any] | None:
     """Return the newest persisted analysis record for a camera, or None."""
-    analyses = [
-        record
-        for record in _load_analyses(store)
-        if str(record.get("camera_id")) == str(camera_id)
-    ]
-    if not analyses:
+    camera_dir = Path(getattr(store, "root_dir", Path("data"))) / "analyses" / str(camera_id)
+    if not camera_dir.is_dir():
         return None
-    return max(analyses, key=lambda record: record.get("captured_at") or "")
+    return _load_latest_analysis_from_dir(camera_dir)
 
 
 def _manifest_camera_by_id(camera_id: str) -> dict[str, Any] | None:
@@ -673,6 +934,7 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         )
         stream_urls = manifest_camera.get("stream_urls") or []
         stream_url = next((url for url in stream_urls if str(url).lower().endswith(".m3u8")), None)
+        calibration = _calibration_status(camera_id, load_camera_calibrations())
         return {
             "camera_id": camera_id,
             "captured_at": None,
@@ -697,7 +959,8 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
             "latest_image_url": None,
             "per_frame": [],
             "map_position": map_position,
-            "calibration": _calibration_status(camera_id, load_camera_calibrations()),
+            "calibration": calibration,
+            "traffic_reliability": _traffic_reliability(None, None, calibration),
         }
 
     details = record.get("details") or {}
@@ -751,6 +1014,12 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         "per_frame": per_frame,
         "map_position": map_position,
         "calibration": calibration,
+        "traffic_reliability": _traffic_reliability(
+            record.get("captured_at"),
+            details.get("congestion_score"),
+            calibration,
+            details.get("mean_confidence"),
+        ),
     }
 
 
@@ -764,11 +1033,14 @@ def get_camera_history(
     if store is None:
         store = JsonStore("data")
 
-    analyses = [
-        record
-        for record in _load_analyses(store)
-        if str(record.get("camera_id")) == str(camera_id)
-    ]
+    camera_dir = Path(getattr(store, "root_dir", Path("data"))) / "analyses" / str(camera_id)
+    analyses: list[dict[str, Any]] = []
+    if camera_dir.is_dir():
+        for path in camera_dir.glob("*.json"):
+            try:
+                analyses.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
     analyses.sort(key=lambda record: record.get("captured_at") or "")
     history = [
         {
@@ -830,20 +1102,43 @@ def update_camera_position(camera_id: str, payload: dict[str, Any]) -> dict[str,
 @router.get("/overview")
 def get_overview(store: Any = None) -> dict[str, Any]:
     """City-wide congestion overview for the dashboard header cards."""
+    wait_for_calibration = store is not None
     if store is None:
         store = JsonStore("data")
     summaries = build_camera_summaries(store=store)
     corridor_segments = _build_corridor_segments(summaries)
-    calibration_summary = _overview_calibration_summary(store)
+    calibration_summary = _overview_calibration_summary(
+        store,
+        wait_for_refresh=wait_for_calibration,
+    )
+    human_calibration = _overview_human_calibration(
+        [str(camera.get("camera_id")) for camera in summaries if camera.get("camera_id")],
+        calibration_summary,
+    )
     counts = {"light": 0, "moderate": 0, "heavy": 0, "blocked": 0, "unknown": 0}
+    live_counts = {"light": 0, "moderate": 0, "heavy": 0, "blocked": 0, "unknown": 0}
+    reliability_counts = {
+        "reliable": 0,
+        "provisional": 0,
+        "low_confidence": 0,
+        "stale": 0,
+        "unavailable": 0,
+    }
     scores: list[float] = []
+    live_scores: list[float] = []
     for cam in summaries:
-        counts[str(cam.get("latest_density") or "unknown").lower()] = (
-            counts.get(str(cam.get("latest_density") or "unknown").lower(), 0) + 1
-        )
+        density = str(cam.get("latest_density") or "unknown").lower()
+        counts[density] = counts.get(density, 0) + 1
+        reliability = cam.get("traffic_reliability") or {}
+        level = str(reliability.get("level") or "unavailable")
+        reliability_counts[level] = reliability_counts.get(level, 0) + 1
+        if reliability.get("is_live"):
+            live_counts[density] = live_counts.get(density, 0) + 1
         score = cam.get("latest_congestion_score")
         if isinstance(score, (int, float)):
             scores.append(float(score))
+            if reliability.get("is_live"):
+                live_scores.append(float(score))
     worst = sorted(
         summaries,
         key=lambda c: (
@@ -856,8 +1151,14 @@ def get_overview(store: Any = None) -> dict[str, Any]:
         "camera_count": len(summaries),
         "density_counts": {k: v for k, v in counts.items() if k != "unknown"} | {"unknown": counts["unknown"]},
         "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "live_density_counts": live_counts,
+        "live_average_score": round(sum(live_scores) / len(live_scores), 2) if live_scores else None,
+        "live_camera_count": sum(live_counts.values()),
+        "reliability_counts": reliability_counts,
+        "live_max_age_minutes": _LIVE_MAX_AGE_MINUTES,
         "corridor_segments": corridor_segments,
         "calibration_summary": calibration_summary,
+        "human_calibration": human_calibration,
         "worst_cameras": [
             {
                 "camera_id": c.get("camera_id"),

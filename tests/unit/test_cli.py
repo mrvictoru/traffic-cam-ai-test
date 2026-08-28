@@ -151,22 +151,23 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
     analyses_dir = tmp_path / "data" / "analyses"
     analyses_dir.mkdir(parents=True)
     (analyses_dir / "50").mkdir()
-    (analyses_dir / "50" / "20260820T030000Z.json").write_text(
+    (analyses_dir / "50" / "20260819T180000Z.json").write_text(
         json.dumps(
             {
                 "camera_id": "50",
-                "captured_at": "2026-08-20T03:00:00Z",
+                # 18:00 UTC is 02:00 the following day in Asia/Macau.
+                "captured_at": "2026-08-19T18:00:00Z",
                 "details": {"median_speed_px_per_frame": 8.0},
             }
         ),
         encoding="utf-8",
     )
     (analyses_dir / "59").mkdir()
-    (analyses_dir / "59" / "20260820T030000Z.json").write_text(
+    (analyses_dir / "59" / "20260819T180000Z.json").write_text(
         json.dumps(
             {
                 "camera_id": "59",
-                "captured_at": "2026-08-20T03:00:00Z",
+                "captured_at": "2026-08-19T18:00:00Z",
                 "details": {},
             }
         ),
@@ -223,6 +224,9 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
         "ready": 1,
     }
     assert payload["speed_calibration"]["status_camera_ids"]["ready"] == ["50"]
+    assert payload["human_calibration"]["human_required"] is True
+    assert payload["human_calibration"]["gaps"]["missing_coordinates"] == 2
+    assert payload["config_files"]["corridors"].endswith("camera_corridors.json")
     assert payload["next_calibration_queue"] == [
         {
             "camera_id": "49",

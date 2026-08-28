@@ -27,11 +27,12 @@ _DENSITY_COLORS = {
 
 def _payload(store: JsonStore | None) -> str:
     """Serialize initial cameras + overview payloads for embedding."""
+    use_background_refresh = store is None
     if store is None:
         store = JsonStore("data")
     summaries = build_camera_summaries(store=store)
     try:
-        overview = get_overview(store=store)
+        overview = get_overview() if use_background_refresh else get_overview(store=store)
     except Exception:
         overview = {}
     return json.dumps({"cameras": summaries, "overview": overview}, ensure_ascii=False)
@@ -81,6 +82,24 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       border-radius: 8px; padding: 7px 11px; font-size: 0.78rem; cursor: pointer;
     }
     .btn:hover { background: rgba(51,65,85,0.95); }
+    #traffic-notice {
+      display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 7px 16px;
+      font-size: 0.78rem; border-bottom: 1px solid rgba(148,163,184,0.2);
+    }
+    #traffic-notice.live { background: #052e16; color: #bbf7d0; }
+    #traffic-notice.provisional { background: #422006; color: #fde68a; }
+    #traffic-notice.historical { background: #450a0a; color: #fecaca; }
+    #traffic-notice strong { color: inherit; }
+    #calibration-panel {
+      padding: 8px 16px 10px; border-bottom: 1px solid rgba(148,163,184,0.2);
+      background: rgba(15,23,42,0.94); font-size: 0.76rem;
+    }
+    #calibration-panel .cal-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-bottom:4px; }
+    #calibration-panel .cal-task { display:flex; gap:8px; align-items:flex-start; margin:3px 0; color:#cbd5e1; }
+    .owner-pill { font-size:0.62rem; border-radius:6px; padding:1px 6px; text-transform:uppercase; letter-spacing:0.04em; flex-shrink:0; margin-top:2px; }
+    .owner-pill.human { color:#fde68a; background:rgba(161,98,7,0.28); border:1px solid rgba(250,204,21,0.4); }
+    .owner-pill.automated { color:#7dd3fc; background:rgba(7,89,133,0.28); border:1px solid rgba(56,189,248,0.4); }
+    .task-status { font-size:0.62rem; color:#94a3b8; }
     main { flex: 1; display: flex; min-height: 0; position: relative; z-index: 500; }
     #sidebar {
       width: 340px; overflow-y: auto; padding: 10px;
@@ -118,6 +137,16 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     .approx-badge {
       font-size: 0.62rem; color: #fde68a; background: rgba(202,138,4,0.18);
       border: 1px solid rgba(202,138,4,0.45); border-radius: 6px; padding: 1px 6px; margin-left: 6px;
+    }
+    .trust-badge {
+      font-size: 0.62rem; border-radius: 6px; padding: 1px 6px; margin-left: 6px;
+      color: #cbd5e1; background: rgba(71,85,105,0.35); border: 1px solid rgba(148,163,184,0.35);
+    }
+    .trust-badge.live { color: #bbf7d0; background: rgba(22,101,52,0.35); border-color: rgba(74,222,128,0.45); }
+    .trust-badge.provisional { color: #fde68a; background: rgba(161,98,7,0.3); border-color: rgba(250,204,21,0.45); }
+    .reliability-panel {
+      margin: 12px 0; padding: 10px 12px; border-radius: 10px; font-size: 0.76rem;
+      background: rgba(71,85,105,0.25); border: 1px solid rgba(148,163,184,0.3);
     }
     #detail-panel {
       top: 0; right: 0; height: 100%; width: 380px; background: rgba(15,23,42,0.98);
@@ -160,11 +189,25 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       <label class="btn" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
         <input type="checkbox" id="auto-refresh" checked style="margin:0;"> Auto
       </label>
+      <label class="btn" style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+        <input type="checkbox" id="show-approximate" style="margin:0;"> Approx markers
+      </label>
     </div>
   </header>
+  <div id="traffic-notice" class="historical">
+    <strong>Checking live coverage…</strong>
+  </div>
+  <div id="calibration-panel" hidden></div>
   <main>
     <aside id="sidebar">
-      <input id="search" type="text" placeholder="Search camera or district…">
+      <div style="display:grid;grid-template-columns:1fr auto;gap:7px;">
+        <input id="search" type="text" placeholder="Search camera or district…">
+        <select id="traffic-filter" class="btn" aria-label="Traffic availability">
+          <option value="all">All cameras</option>
+          <option value="live">Live only</option>
+          <option value="attention">Needs attention</option>
+        </select>
+      </div>
       <div id="camera-list"></div>
     </aside>
     <div id="map-wrap">
@@ -196,6 +239,8 @@ let refreshTimer = null;
 let editModeEnabled = false;
 
 function densityColor(d) { return DENSITY_COLORS[(d || 'unknown').toLowerCase()] || DENSITY_COLORS.unknown; }
+function reliability(cam) { return cam.traffic_reliability || { level: 'unavailable', is_live: false }; }
+function displayDensity(cam) { return reliability(cam).is_live ? cam.latest_density : 'unknown'; }
 function scoreColor(score) {
   if (score == null) return DENSITY_COLORS.unknown;
   if (score >= 75) return DENSITY_COLORS.blocked;
@@ -217,66 +262,106 @@ function approximateCameraCount() {
   return CAMERAS.filter(hasApproximatePosition).length;
 }
 function setStatus(message) {
-  const approximate = approximateCameraCount();
-  const suffix = approximate ? ` · ${approximate} approximate` : '';
-  document.getElementById('status').textContent = `${message}${suffix}`;
+  document.getElementById('status').textContent = message;
 }
 
 function buildLegend() {
   document.getElementById('legend').innerHTML =
-    '<strong style="font-size:0.75rem;">Congestion</strong>' +
+    '<strong style="font-size:0.75rem;">Live traffic</strong>' +
     Object.entries(DENSITY_COLORS).filter(([k]) => k !== 'unknown')
       .map(([k, c]) => `<div class="row"><span class="swatch" style="background:${c}"></span>${k[0].toUpperCase() + k.slice(1)}</div>`)
-      .join('');
+      .join('') +
+    `<div class="row"><span class="swatch" style="background:${DENSITY_COLORS.unknown}"></span>Stale / no data</div>` +
+    '<div style="max-width:150px;margin-top:6px;color:#94a3b8;font-size:0.65rem;">Colours apply only to observations from the last 20 minutes. Dashed roads are historical or provisional. Approximate camera locations are hidden by default.</div>';
 }
 
 function renderCards(overview) {
   const o = overview || {};
-  const dc = o.density_counts || {};
+  const dc = o.live_density_counts || {};
+  const rc = o.reliability_counts || {};
   const calibration = o.calibration_summary || {};
   const cards = [
-    ['Avg score', o.average_score != null ? o.average_score.toFixed(1) : '—', '#e2e8f0'],
+    ['Live now', o.live_camera_count ?? 0, '#4ade80'],
+    ['Live avg', o.live_average_score != null ? o.live_average_score.toFixed(1) : '—', '#e2e8f0'],
     ['Blocked', dc.blocked ?? '—', DENSITY_COLORS.blocked],
     ['Heavy', dc.heavy ?? '—', DENSITY_COLORS.heavy],
+    ['Stale', rc.stale ?? '—', '#fca5a5'],
+    ['No data', rc.unavailable ?? '—', '#94a3b8'],
     ['Calibrated', calibration.configured ?? '—', '#38bdf8'],
-    ['Ready', calibration.ready ?? '—', '#a3e635'],
-    ['Need history', calibration.insufficient_history ?? '—', '#facc15'],
-    ['Cameras', o.camera_count ?? CAMERAS.length, '#e2e8f0'],
+    ['Need you', (o.human_calibration || {}).human_remaining ?? '—', '#fde68a'],
   ];
   document.getElementById('cards').innerHTML = cards.map(([k, v, c]) =>
     `<div class="card"><div class="k">${k}</div><div class="v" style="color:${c}">${v}</div></div>`).join('');
 
-  const readyQueue = Array.isArray(calibration.next_ready_camera_ids) && calibration.next_ready_camera_ids.length
-    ? ` · ready: ${calibration.next_ready_camera_ids.join(', ')}`
-    : '';
-  const existing = document.getElementById('status').textContent || '';
-  if (existing.startsWith('Loaded') || existing.startsWith('Updated')) {
-    document.getElementById('status').textContent = `${existing} · calibration ${calibration.configured ?? 0}/${o.camera_count ?? CAMERAS.length}${readyQueue}`;
+  const notice = document.getElementById('traffic-notice');
+  const liveCount = o.live_camera_count ?? 0;
+  const reliableCount = rc.reliable ?? 0;
+  if (!liveCount) {
+    notice.className = 'historical';
+    notice.innerHTML = `<strong>Historical view — no current traffic observations.</strong> Latest scores are older than ${o.live_max_age_minutes ?? 20} minutes and are shown in grey, not as live conditions.`;
+  } else if (!reliableCount) {
+    notice.className = 'provisional';
+    notice.innerHTML = `<strong>Live but provisional.</strong> ${liveCount} cameras are current, but none are calibrated against free-flow speed yet. Use colours as estimates, not routing-grade traffic.`;
+  } else {
+    notice.className = 'live';
+    notice.innerHTML = `<strong>Live coverage:</strong> ${liveCount}/${o.camera_count ?? CAMERAS.length} cameras current · ${reliableCount} calibrated and reliable.`;
   }
+  renderCalibrationPanel(o.human_calibration);
+}
+
+function renderCalibrationPanel(calibration) {
+  const panel = document.getElementById('calibration-panel');
+  if (!panel) return;
+  if (!calibration || !Array.isArray(calibration.tasks) || !calibration.tasks.length) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+    return;
+  }
+  const windowInfo = calibration.offpeak_window || {};
+  const human = calibration.tasks.filter(task => task.owner === 'human' && task.status !== 'done');
+  const headline = calibration.human_required
+    ? `Human calibration required — ${calibration.human_remaining} map/ROI/corridor items still need a person.`
+    : 'No blocking human calibration items.';
+  const windowLabel = windowInfo.in_offpeak_window
+    ? '02:00–05:00 Asia/Macau collection window is open now. Evening/daytime captures cannot be used as free-flow speeds.'
+    : `Free-flow collection window is 02:00–05:00 Asia/Macau. Next window ${windowInfo.next_window_start || 'tonight'}; do not run calibrate-freeflow until then.`;
+  panel.hidden = false;
+  panel.innerHTML =
+    `<div class="cal-head"><strong>${headline}</strong><span class="muted">${windowLabel}</span></div>` +
+    calibration.tasks.map(task => {
+      const remaining = task.remaining ? ` · ${task.remaining} remaining` : '';
+      return `<div class="cal-task"><span class="owner-pill ${task.owner}">${task.owner}</span><div><div>${task.title} <span class="task-status">${task.status}${remaining}</span></div><div class="muted">${task.detail || ''} ${task.action || ''}</div></div></div>`;
+    }).join('') +
+    (human.length ? '<div class="muted" style="margin-top:4px;">Use Edit positions for camera placement. ROI, flow-line, and corridor geometry still need a person looking at the actual road.</div>' : '');
 }
 
 function renderList() {
   const q = document.getElementById('search').value.trim().toLowerCase();
+  const filter = document.getElementById('traffic-filter').value;
   const rows = CAMERAS
     .filter(cam => !q || [cam.name, cam.district, cam.sub_district, cam.camera_id]
       .some(v => (v || '').toString().toLowerCase().includes(q)))
+    .filter(cam => filter === 'all' || (filter === 'live' ? reliability(cam).is_live : !reliability(cam).is_live))
     .sort((a, b) => {
-      const pa = DENSITY_ORDER[a.latest_density] ?? -1, pb = DENSITY_ORDER[b.latest_density] ?? -1;
+      if (reliability(a).is_live !== reliability(b).is_live) return reliability(b).is_live ? 1 : -1;
+      const pa = DENSITY_ORDER[displayDensity(a)] ?? -1, pb = DENSITY_ORDER[displayDensity(b)] ?? -1;
       if (pa !== pb) return pb - pa;
       return (b.latest_congestion_score ?? -1) - (a.latest_congestion_score ?? -1);
     });
   document.getElementById('camera-list').innerHTML = rows.map(cam => {
-    const color = densityColor(cam.latest_density);
+    const trust = reliability(cam);
+    const color = densityColor(displayDensity(cam));
     const score = cam.latest_congestion_score;
     const m = minutesAgo(cam.latest_captured_at);
-    const stale = staleMinutes(cam.latest_captured_at)
-      ? `<span class="stale-badge">stale${m != null ? ' · ' + m + 'm' : ''}</span>` : '';
+    const freshness = trust.is_live
+      ? `<span class="trust-badge ${trust.level === 'reliable' ? 'live' : 'provisional'}">${trust.level}</span>`
+      : `<span class="stale-badge">${trust.level}${m != null ? ' · ' + m + 'm' : ''}</span>`;
     const approx = hasApproximatePosition(cam) ? '<span class="approx-badge">needs placement</span>' : '';
     return `<div class="cam-row" onclick="openDetail('${cam.camera_id}')">
       <span class="dot" style="background:${color}"></span>
-      <div><div class="name">${cam.name || 'Camera ' + cam.camera_id}${stale}${approx}</div>
+      <div><div class="name">${cam.name || 'Camera ' + cam.camera_id}${freshness}${approx}</div>
         <div class="sub">${[cam.district, cam.sub_district].filter(Boolean).join(' · ') || 'Location pending'}</div></div>
-      <span class="score-pill" style="background:${color}">${score != null ? Math.round(score) : '—'}</span>
+      <span class="score-pill" style="background:${color};opacity:${trust.is_live ? 1 : 0.65}">${trust.is_live && score != null ? Math.round(score) : '—'}</span>
     </div>`;
   }).join('') || '<p class="muted">No cameras match.</p>';
 }
@@ -291,21 +376,22 @@ function addSegments(segments) {
     const start = segment.start || {};
     const end = segment.end || {};
     if (start.latitude == null || start.longitude == null || end.latitude == null || end.longitude == null) return;
-    const color = densityColor(segment.density);
+    const color = segment.is_live ? densityColor(segment.density) : DENSITY_COLORS.unknown;
     const weight = segment.average_score != null ? Math.max(3, Math.min(8, Math.round(segment.average_score / 18))) : 4;
-    const dashArray = segment.is_approximate ? '8 6' : null;
+    const dashArray = segment.is_approximate || !segment.is_live || segment.reliability !== 'reliable' ? '8 6' : null;
     const polyline = L.polyline(
       [[start.latitude, start.longitude], [end.latitude, end.longitude]],
       {
         color,
         weight,
-        opacity: segment.is_approximate ? 0.55 : 0.85,
+        opacity: segment.is_live ? (segment.is_approximate ? 0.55 : 0.9) : 0.45,
         dashArray,
       }
     ).addTo(map);
-    const scoreLabel = segment.average_score != null ? ` · score ${Math.round(segment.average_score)}` : '';
+    const scoreLabel = segment.is_live && segment.average_score != null ? ` · score ${Math.round(segment.average_score)}` : '';
+    const trustLabel = segment.is_live ? ` · ${segment.reliability}` : ' · historical';
     polyline.bindTooltip(
-      `${segment.sub_district || segment.district || 'Corridor'} · ${(segment.density || 'unknown').toUpperCase()}${scoreLabel}`,
+      `${segment.name || segment.sub_district || segment.district || 'Corridor'} · ${segment.is_live ? (segment.density || 'unknown').toUpperCase() : 'NO LIVE DATA'}${scoreLabel}${trustLabel}`,
       { sticky: true }
     );
     corridorLayers.push(polyline);
@@ -341,17 +427,19 @@ async function saveCameraPosition(cameraId, latitude, longitude) {
 function addMarkers(cameras) {
   clearMarkers();
   cameras.forEach(cam => {
+    if (hasApproximatePosition(cam) && !document.getElementById('show-approximate').checked) return;
     const pos = cam.map_position || {};
     const lat = cam.latitude != null ? cam.latitude : pos.latitude;
     const lon = cam.longitude != null ? cam.longitude : pos.longitude;
     if (lat == null || lon == null) return;
-    const color = densityColor(cam.latest_density);
+    const trust = reliability(cam);
+    const color = densityColor(displayDensity(cam));
     const score = cam.latest_congestion_score;
     const icon = L.divIcon({
       className: '',
       html: `<div style="display:flex;flex-direction:column;align-items:center;">
-          <div style="background:${color};width:16px;height:16px;border-radius:50%;border:3px solid rgba(15,23,42,0.9);box-shadow:0 0 0 5px rgba(0,0,0,0.12);cursor:pointer;"></div>
-          ${score != null ? `<div style="font-size:0.58rem;font-weight:700;color:#0f172a;background:${color};border-radius:6px;padding:0 4px;margin-top:2px;">${Math.round(score)}</div>` : ''}
+          <div style="background:${color};width:${trust.is_live ? 16 : 11}px;height:${trust.is_live ? 16 : 11}px;border-radius:50%;border:3px solid rgba(15,23,42,0.9);opacity:${trust.is_live ? 1 : 0.55};cursor:pointer;"></div>
+          ${trust.is_live && score != null ? `<div style="font-size:0.58rem;font-weight:700;color:#0f172a;background:${color};border-radius:6px;padding:0 4px;margin-top:2px;">${Math.round(score)}</div>` : ''}
         </div>`,
       iconSize: [34, 32], iconAnchor: [17, 14]
     });
@@ -400,7 +488,8 @@ async function openDetail(id) {
       }),
       fetch(`/api/cameras/${encodeURIComponent(id)}/history?limit=24`).then(r => r.ok ? r.json() : [])
     ]);
-    const color = densityColor(detail.density);
+    const trust = reliability(detail);
+    const color = densityColor(trust.is_live ? detail.density : 'unknown');
     const approximate = ((detail.map_position || {}).source || 'approximate') !== 'coordinates';
     const imageSection = detail.latest_image_url
       ? `<div class="section"><h3>Latest frame</h3><img class="frame-preview" src="${detail.latest_image_url}"></div>`
@@ -416,9 +505,10 @@ async function openDetail(id) {
     content.innerHTML = `
       <h2>${detail.name || 'Camera ' + detail.camera_id}</h2>
       <p class="sub">ID ${detail.camera_id} · ${[detail.district, detail.sub_district].filter(Boolean).join(' · ') || 'Location pending'}${approximate ? ' · approximate placement' : ''}</p>
-      <span class="density-badge" style="background:${color}">${(detail.density || 'unknown').toUpperCase()}</span>
-      <span style="margin-left:8px;font-weight:700;">Score ${detail.congestion_score != null ? detail.congestion_score : '—'}/100</span>
+      <span class="density-badge" style="background:${color}">${trust.is_live ? (detail.density || 'unknown').toUpperCase() : 'NO LIVE DATA'}</span>
+      <span style="margin-left:8px;font-weight:700;">${trust.is_live && detail.congestion_score != null ? `Score ${detail.congestion_score}/100` : 'Historical score hidden'}</span>
       ${approximate ? '<span class="approx-badge">drag in edit mode to place</span>' : ''}
+      <div class="reliability-panel"><strong>${(trust.level || 'unavailable').replace('_', ' ').toUpperCase()}</strong><br>${trust.reason || 'Traffic reliability is unknown.'}${trust.age_minutes != null ? ` · observed ${trust.age_minutes} minutes ago` : ''}</div>
       ${imageSection}
       <div class="stat-grid">
         <div class="stat"><div class="k">Vehicles (mean)</div><div class="v">${detail.vehicle_count ?? '—'}</div></div>
@@ -426,7 +516,7 @@ async function openDetail(id) {
         <div class="stat"><div class="k">Confidence</div><div class="v">${detail.mean_confidence != null ? (detail.mean_confidence * 100).toFixed(0) + '%' : '—'}</div></div>
         <div class="stat"><div class="k">Scene</div><div class="v">${[detail.lighting, detail.quality_flag].filter(Boolean).join('/') || '—'}</div></div>
       </div>
-      <div class="section"><h3>Congestion trend (score)</h3>${Array.isArray(history) ? scoreChart(history) : '<p class="muted">No history.</p>'}</div>
+      <div class="section"><h3>Historical congestion trend</h3>${Array.isArray(history) ? scoreChart(history) : '<p class="muted">No history.</p>'}</div>
       ${flowSection}
       <div class="section"><h3>Captured</h3><p class="muted">${detail.captured_at || 'unknown'}${staleMinutes(detail.captured_at) ? ' · <span style="color:#fca5a5">stale</span>' : ''}</p></div>
       ${detail.stream_url ? `<div class="section"><h3>Stream</h3><span class="stream-link">${detail.stream_url}</span></div>` : ''}
@@ -464,6 +554,8 @@ document.getElementById('refresh-btn').addEventListener('click', refresh);
 document.getElementById('close-panel').addEventListener('click', () => document.getElementById('detail-panel').classList.remove('open'));
 document.getElementById('auto-refresh').addEventListener('change', setupAutoRefresh);
 document.getElementById('search').addEventListener('input', renderList);
+document.getElementById('traffic-filter').addEventListener('change', renderList);
+document.getElementById('show-approximate').addEventListener('change', () => addMarkers(CAMERAS));
 document.getElementById('edit-mode-btn').addEventListener('click', () => {
   editModeEnabled = !editModeEnabled;
   document.getElementById('edit-mode-btn').textContent = editModeEnabled ? '✓ Editing' : '✎ Edit positions';

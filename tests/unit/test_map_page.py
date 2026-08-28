@@ -23,6 +23,11 @@ def test_render_map_page_embeds_corridor_and_calibration_payload(monkeypatch) ->
         "camera_count": 1,
         "density_counts": {"light": 0, "moderate": 1, "heavy": 0, "blocked": 0, "unknown": 0},
         "average_score": 42.0,
+        "live_average_score": None,
+        "live_camera_count": 0,
+        "live_max_age_minutes": 20,
+        "live_density_counts": {"light": 0, "moderate": 0, "heavy": 0, "blocked": 0, "unknown": 0},
+        "reliability_counts": {"reliable": 0, "provisional": 0, "stale": 1, "unavailable": 0},
         "corridor_segments": [
             {
                 "segment_id": "friendship-bridge:1",
@@ -51,12 +56,22 @@ def test_render_map_page_embeds_corridor_and_calibration_payload(monkeypatch) ->
     assert "L.polyline" in html
     assert "CORRIDOR_SEGMENTS" in html
     assert "Calibrated" in html
-    assert "Need history" in html
+    assert "Live now" in html
+    assert "Stale" in html
     assert "friendship-bridge:1" in html
     assert '"configured": 1' in html
     assert '"next_ready_camera_ids": ["51", "52"]' in html
     assert "__PAYLOAD_JSON__" not in html
     assert "__DENSITY_COLORS__" not in html
+    assert "Historical view — no current traffic observations." in html
+    assert "Colours apply only to observations from the last 20 minutes." in html
+    assert "Live only" in html
+    assert "Approx markers" in html
+    assert "Approximate camera locations are hidden by default." in html
+    assert "Need you" in html
+    assert "Human calibration required" in html
+    assert "02:00–05:00 Asia/Macau" in html
+    assert "Use Edit positions for camera placement." in html
 
 
 def test_payload_falls_back_when_overview_is_unavailable(monkeypatch) -> None:

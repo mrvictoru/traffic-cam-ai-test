@@ -444,7 +444,7 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ## 9. Current project checklist
 
-Status as of 2026-08-27:
+Status as of 2026-08-28:
 
 - [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
 - [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
@@ -461,7 +461,13 @@ Status as of 2026-08-27:
 - [x] set the sparse-burst defaults to the simple tracker and 5 FPS while keeping Supervision available as an explicit override
 - [x] apply the 02:00-05:00 calibration window in `Asia/Macau` local time instead of comparing UTC `Z` timestamps directly
 - [x] add direct Leaflet-page render coverage for corridor and calibration payloads
-- [ ] populate live calibration values from additional sustained motion history once more real-world data is collected
+- [x] commit and push the validated checkpoint as `980371c` on `copilot/build-web-ui-for-map-visualization`
+- [x] inspect the live dashboard against `/api/overview` and `/api/cameras`: 111 cameras, 3 green corridors, and matching summary cards/markers
+- [x] remove the hardcoded `PIPELINE_AUTOSTART=1` runtime bottleneck, make the default Compose service API-only, and expose live capture through an explicit `capture` profile
+- [x] add explicit traffic reliability metadata and live-coverage aggregates so stale, uncalibrated, and missing observations are not presented as routing-grade live traffic
+- [x] make the dashboard suppress stale congestion colours and scores, grey out historical corridors, and explain live coverage/calibration limitations in a prominent status banner
+- [x] surface an explicit human-vs-automated calibration checklist on `/api/overview` and the dashboard so placement, ROI, corridor, and 02:00-05:00 collection work are not mistaken for finished live traffic
+- [ ] populate live calibration values from additional sustained motion history once more real-world data is collected, including a 02:00-05:00 Asia/Macau capture window; evening captures may only refresh occupancy
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
 - [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
 - [x] catalog four additional named-road candidates (Guia Tunnel, Sai Van Bridge, Qingmao Port, and Avenida do Ouvidor Arriaga) as disabled until their camera positions and road order are verified
@@ -507,28 +513,65 @@ The project is now past the initial prototype stage. The main work remaining is 
 
 ## 11. Immediate next actions
 
-Status update 2026-08-27: an `audit-config` run over the persisted history
+Status update 2026-08-28: an `audit-config` run over the persisted history
 confirmed that none of the 9,646 existing analysis records contain
 `median_speed_px_per_frame` because they all predate the speed-aware scoring
 commit. The rollout therefore needs fresh motion data before free-flow values
 can be computed — no code change can backfill from this history.
 
-The manual rollout loop is now:
+Live dashboard validation on the same checkpoint confirmed that the rendered
+page agrees with the API payload: 111 cameras, average score 3.5, 3 green
+corridor polylines, and 105 approximate camera positions. Only 6 cameras have
+verified coordinates, so the remaining markers currently form coarse district
+clusters rather than a reliable road map. Calibration is still 0 configured,
+with 30 cameras having motion records but no usable off-peak history and 81
+having no history. The dashboard's `Need history` card currently shows 0 because
+it only counts `insufficient_history`; the detailed calibration payload is the
+authoritative breakdown.
+
+The normal Compose service is now API-only with `PIPELINE_AUTOSTART=0`. Live
+capture runs in a separate `live-capture` service through the explicit
+`capture` profile (`docker compose --profile capture up`), so model inference
+cannot starve Uvicorn. Dashboard loading was also moved away from recursive
+request-time scans of all 9,646 analysis files: startup warms only the latest
+record per camera, while calibration coverage refreshes in the background.
+After the service reported healthy, measured response times were 0.16 seconds
+for `/`, 0.06 seconds for `/api/cameras`, and 0.11 seconds for `/api/overview`.
+
+The dashboard now treats a traffic observation as live only for 20 minutes.
+Current API output correctly reports zero live cameras for the persisted
+2026-08-27 data instead of rendering those old scores as a green live traffic
+layer. Fresh but uncalibrated observations are labelled provisional; only
+fresh, calibrated observations with adequate detector confidence are labelled
+reliable. This improves honesty and readability, but routing-grade accuracy
+still depends on collecting fresh 02:00-05:00 motion history and completing
+per-camera calibration.
+
+Human work that cannot be automated:
+
+- place the remaining approximate cameras (currently 105 of 111) with **Edit
+  positions** or `config/camera_coordinates.json`;
+- draw roadway ROIs and flow lines in `config/camera_rois.json` and
+  `config/camera_flow_lines.json`;
+- verify and enable the four disabled named corridors after checking camera
+  order and geometry.
+
+Automated work that is time-gated:
 
 1. use the rebuilt CPU-only Docker image and current simple-tracker/5-FPS defaults;
-2. run scheduled capture cycles across off-peak hours (02:00–05:00 Macau local time, equivalent to 18:00–21:00 UTC on the previous date) so each camera accumulates at least `--min-history` (default 5) usable motion samples;
+2. run scheduled capture cycles across off-peak hours (02:00–05:00 Macau local time, equivalent to 18:00–21:00 UTC on the previous date) so each camera accumulates at least `--min-history` (default 5) usable motion samples. Evening/daytime cycles can refresh live occupancy only;
 3. run `python -m trafficcam.cli calibrate-freeflow --data-dir data --dry-run` to preview which cameras are ready, then drop `--dry-run` to persist values into `config/camera_speed_calibration.json`;
-4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` climbs and the dashboard's calibration cards reflect it.
+4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` climbs and the dashboard's `Need you` / calibration checklist reflect it.
 
 Error-path records now carry the same schema as successful ones (null motion
 values), so failed analyses no longer produce structurally inconsistent rows.
 
 For later work sessions, the remaining priorities in order:
 
-1. verify road geometry and expand the config-backed corridor model beyond the initial six positioned cameras;
-2. collect fresh off-peak motion history, rebuild the Docker image, and run the calibration backfill workflow;
+1. collect fresh off-peak motion history, rebuild the Docker image if needed, and run the calibration backfill workflow;
+2. verify more camera coordinates and road geometry before enabling additional corridors; replace long point-to-point chords with defensible segment paths;
 3. wire richer segment geometry into the overview API and map rendering while keeping per-camera markers as the drill-down view;
-4. add broader end-to-end coverage for live coordinates, map rendering, and UI response flows.
+4. add broader end-to-end coverage for live coordinates, map rendering, detail-panel loading, and UI response flows.
 
 This keeps the project moving from a solid dashboard prototype toward a more realistic traffic-layer experience without overbuilding the architecture before the calibration data is trustworthy.
 

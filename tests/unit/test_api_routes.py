@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from importlib import reload
 from pathlib import Path
 
@@ -75,6 +76,118 @@ def test_api_routes_import_and_list_cameras(tmp_path: Path) -> None:
     assert cameras[0]["latest_density"] == "heavy"
     assert cameras[0]["map_position"]["source"] == "coordinates"
     assert cameras[0]["map_position"]["latitude"] == 22.195
+
+
+def test_traffic_reliability_distinguishes_live_stale_and_calibrated() -> None:
+    now = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+    uncalibrated = {"is_calibrated": False}
+    calibrated = {"is_calibrated": True}
+
+    provisional = routes._traffic_reliability(
+        "2026-08-28T14:15:00Z",
+        42.0,
+        uncalibrated,
+        0.8,
+        now=now,
+    )
+    reliable = routes._traffic_reliability(
+        "2026-08-28T14:10:00Z",
+        42.0,
+        calibrated,
+        0.8,
+        now=now,
+    )
+    stale = routes._traffic_reliability(
+        "2026-08-28T14:09:00Z",
+        42.0,
+        calibrated,
+        0.8,
+        now=now,
+    )
+
+    assert provisional["level"] == "provisional"
+    assert provisional["is_live"] is True
+    assert reliable["level"] == "reliable"
+    assert reliable["age_minutes"] == 20
+    assert stale["level"] == "stale"
+    assert stale["is_live"] is False
+
+
+def test_traffic_reliability_marks_missing_score_unavailable() -> None:
+    status = routes._traffic_reliability(None, None, {"is_calibrated": False})
+
+    assert status["level"] == "unavailable"
+    assert status["is_live"] is False
+    assert status["age_minutes"] is None
+
+
+def test_list_cameras_only_loads_latest_record_per_camera(tmp_path: Path) -> None:
+    store = JsonStore(tmp_path)
+    _seed_analysis(
+        store,
+        captured_at="2026-06-24T08:00:00Z",
+        density="heavy",
+        congestion_score=72.0,
+    )
+    store.save_json(
+        "analyses/cam1/20260624T090000Z_9.json",
+        {
+            "camera_id": "cam1",
+            "captured_at": "2026-06-24T09:00:00Z",
+            "label": "blocked",
+            "details": {
+                "density": "blocked",
+                "congestion_score": 90.0,
+                "capture_result": {"name": "Outer Harbour"},
+            },
+        },
+    )
+    store.save_json(
+        "analyses/cam1/20260624T090000Z_10.json",
+        {
+            "camera_id": "cam1",
+            "captured_at": "2026-06-24T09:00:00Z",
+            "label": "light",
+            "details": {
+                "density": "light",
+                "congestion_score": 12.0,
+                "capture_result": {"name": "Outer Harbour"},
+            },
+        },
+    )
+
+    module = reload(routes)
+    cameras = module.list_cameras(store=store)
+
+    assert len(cameras) == 1
+    assert cameras[0]["latest_captured_at"] == "2026-06-24T09:00:00Z"
+    assert cameras[0]["latest_density"] == "light"
+    assert cameras[0]["latest_congestion_score"] == 12.0
+
+
+def test_default_overview_refreshes_calibration_in_background(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = JsonStore(tmp_path)
+    _seed_analysis(store)
+    module = reload(routes)
+    started: list[tuple] = []
+
+    class _FakeThread:
+        def __init__(self, *, target, args, name, daemon):
+            started.append((target, args, name, daemon))
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(module.threading, "Thread", _FakeThread)
+    summary = module._overview_calibration_summary(store, wait_for_refresh=False)
+
+    assert summary["refreshing"] is True
+    assert len(started) == 1
+    assert started[0][2] == "trafficcam-calibration-summary"
+    assert started[0][3] is True
 
 
 def test_list_cameras_exposes_flow_split_and_coordinates(tmp_path: Path) -> None:
@@ -352,6 +465,9 @@ def test_get_overview_omits_unconfigured_corridors(tmp_path: Path) -> None:
     assert calibration["missing"] == 1
     assert calibration["missing_motion_history"] == 1
     assert calibration["next_ready_camera_ids"] == []
+    assert overview["live_camera_count"] == 0
+    assert overview["live_average_score"] is None
+    assert overview["reliability_counts"]["stale"] == 1
 
 
 def test_get_overview_omits_disabled_corridors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,3 +547,61 @@ def test_get_overview_reports_calibration_readiness(tmp_path: Path, monkeypatch:
     assert calibration["ready"] == 1
     assert calibration["missing"] == 2
     assert calibration["next_ready_camera_ids"] == ["50"]
+
+
+def test_get_overview_reports_human_calibration_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "cameras": [
+                    {"cam_id": "49", "name": "Cam 49", "district": "澳門區"},
+                    {"cam_id": "70", "name": "Cam 70", "district": "澳門區"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    coords_path = tmp_path / "camera_coordinates.json"
+    coords_path.write_text(
+        json.dumps({"cameras": {"49": {"latitude": 22.19, "longitude": 113.54}}}),
+        encoding="utf-8",
+    )
+    rois_path = tmp_path / "camera_rois.json"
+    rois_path.write_text(json.dumps({"49": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}), encoding="utf-8")
+    flow_path = tmp_path / "camera_flow_lines.json"
+    flow_path.write_text(json.dumps({"49": {"start": [0.0, 0.5], "end": [1.0, 0.5]}}), encoding="utf-8")
+    corridor_path = tmp_path / "camera_corridors.json"
+    corridor_path.write_text(
+        json.dumps(
+            {
+                "corridors": [
+                    {"corridor_id": "named", "name": "Guia Tunnel", "camera_ids": ["69", "70"], "enabled": False}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CAMERA_MANIFEST_PATH", str(manifest_path))
+    monkeypatch.setenv("CAMERA_COORDS_PATH", str(coords_path))
+    monkeypatch.setenv("ROI_CONFIG_PATH", str(rois_path))
+    monkeypatch.setenv("FLOW_LINE_CONFIG_PATH", str(flow_path))
+    monkeypatch.setenv("CAMERA_CORRIDORS_PATH", str(corridor_path))
+    store = JsonStore(tmp_path)
+    _seed_analysis(store, "49", latitude=22.19, longitude=113.54)
+
+    module = reload(routes)
+    overview = module.get_overview(store=store)
+    human = overview["human_calibration"]
+
+    assert human["human_required"] is True
+    assert human["gaps"]["missing_coordinates"] == 1
+    assert human["gaps"]["missing_rois"] == 1
+    assert human["gaps"]["missing_flow_lines"] == 1
+    assert human["gaps"]["disabled_corridor_names"] == ["Guia Tunnel"]
+    tasks = {task["id"]: task for task in human["tasks"]}
+    assert tasks["place-cameras"]["owner"] == "human"
+    assert tasks["place-cameras"]["remaining"] == 1
+    assert tasks["verify-corridors"]["remaining"] == 1
+    assert tasks["run-calibrate-freeflow"]["owner"] == "automated"

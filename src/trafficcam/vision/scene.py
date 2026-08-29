@@ -46,7 +46,7 @@ class SceneClassifier:
         brightness_day_min: int | None = None,
         brightness_dusk_min: int | None = None,
         low_visibility_edge_max: float | None = None,
-        use_zero_shot: bool = True,
+        use_zero_shot: bool = False,
     ) -> None:
         self.brightness_day_min = (
             brightness_day_min if brightness_day_min is not None else settings.scene_brightness_day_min
@@ -62,15 +62,20 @@ class SceneClassifier:
         self.use_zero_shot = use_zero_shot and _TRANSFORMERS_AVAILABLE
         self._pipeline: Any | None = None
 
-    def _get_pipeline(self) -> Any:
+    def _get_pipeline(self) -> Any | None:
         """Lazy-load zero-shot classification pipeline."""
         if self._pipeline is None and self.use_zero_shot:
-            LOGGER.info("Loading zero-shot scene classification model")
-            self._pipeline = pipeline(
-                "zero-shot-image-classification",
-                model=settings.vision_model_name,
-                device=settings.vision_device,
-            )
+            try:
+                LOGGER.info("Loading zero-shot scene classification model")
+                self._pipeline = pipeline(
+                    "zero-shot-image-classification",
+                    model=settings.vision_model_name,
+                    device=settings.vision_device,
+                )
+            except Exception as exc:
+                LOGGER.debug("Zero-shot scene classification model load failed: %s", exc)
+                self._pipeline = None
+                self.use_zero_shot = False
         return self._pipeline
 
     @staticmethod
@@ -80,6 +85,7 @@ class SceneClassifier:
             LOGGER.warning("opencv not available; scene heuristics disabled")
             return {
                 "brightness": 0.0,
+                "brightness_median": 0.0,
                 "contrast": 0.0,
                 "edge_density": 0.0,
             }
@@ -90,7 +96,9 @@ class SceneClassifier:
 
         # Brightness: mean of V channel in HSV
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        brightness = float(np.mean(hsv[:, :, 2]))
+        value_channel = hsv[:, :, 2]
+        brightness = float(np.mean(value_channel))
+        brightness_median = float(np.median(value_channel))
 
         # Contrast: standard deviation of grayscale luma
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -102,6 +110,7 @@ class SceneClassifier:
 
         return {
             "brightness": round(brightness, 2),
+            "brightness_median": round(brightness_median, 2),
             "contrast": round(contrast, 2),
             "edge_density": round(edge_density, 4),
         }
@@ -126,12 +135,14 @@ class SceneClassifier:
 
         heuristics = self._compute_heuristics(image_path)
         brightness = heuristics["brightness"]
+        brightness_median = heuristics.get("brightness_median", brightness)
         edge_density = heuristics["edge_density"]
 
-        # Lighting from brightness
-        if brightness >= self.brightness_day_min:
+        # Lighting primarily follows median brightness so a few headlights or
+        # street lamps do not flip a dark scene into "day".
+        if brightness_median >= self.brightness_day_min:
             lighting = "day"
-        elif brightness >= self.brightness_dusk_min:
+        elif brightness_median >= self.brightness_dusk_min:
             lighting = "dusk"
         else:
             lighting = "night"
@@ -175,6 +186,8 @@ class SceneClassifier:
                         confidence = min(0.99, confidence + 0.1)
             except Exception as exc:
                 LOGGER.debug("Zero-shot scene classification failed: %s", exc)
+                zero_shot_labels = {}
+                self.use_zero_shot = False
 
         return {
             "image_path": image_path,

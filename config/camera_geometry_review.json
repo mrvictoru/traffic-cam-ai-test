@@ -1,0 +1,38 @@
+{
+  "reviewed_at": "2026-08-29",
+  "source": "output/live/cam_<id>/frame_005.jpg captured 2026-08-28 around 23:05 Asia/Macau",
+  "roi_reviewed_camera_ids": [
+    "49", "50", "51", "52", "58", "59", "64", "65", "66", "67", "68",
+    "70", "71", "72", "73", "74", "75", "76", "77", "78", "79", "80",
+    "81", "82", "83"
+  ],
+  "flow_line_reviewed_camera_ids": [
+    "50", "51", "52", "58", "59", "64", "65", "66", "67", "68", "70",
+    "71", "72", "74", "75", "76", "77", "78", "80", "81", "83"
+  ],
+  "coordinate_reviewed_camera_ids": ["60", "62"],
+  "coordinate_sources": {
+    "60": "OpenStreetMap Nominatim named-place centre for 北安圓形地 Rotunda de Pac On, way 244820725.",
+    "62": "OpenStreetMap Nominatim named bus-station node for 亞馬喇前地 Praça Ferreira Amaral, node 7644921493."
+  },
+  "deferred_camera_ids": {
+    "60": "Frame is too blurred to identify lane boundaries reliably.",
+    "61": "Construction occupies most of the view and the usable traffic region is too small.",
+    "62": "Multi-arm roundabout view needs separate polygon zones; the current schema supports one polygon.",
+    "63": "Construction blocks the central road geometry; review again after works change.",
+    "69": "Glare and privacy masks obscure too much of the junction for a defensible line."
+  },
+  "deferred_flow_line_camera_ids": {
+    "49": "The box junction contains multiple crossing movements; one line would mix directions.",
+    "73": "The roundabout has several curved movements; one line would not represent a single direction.",
+    "79": "The intersection contains crossing roads and needs separate directional lines.",
+    "82": "The junction contains several approaches and needs separate directional lines."
+  },
+  "limitations": [
+    "ROIs and flow lines were reviewed from a five-frame nighttime burst and cross-checked against a daylight frame where capture succeeded.",
+    "The detector validation retained 63 of 64 daylight vehicle detections; the excluded detection was a partially clipped foreground vehicle at the image boundary.",
+    "They must be rechecked after construction or camera-angle changes.",
+    "This review does not verify geographic coordinates or enable disabled corridors.",
+    "This review does not create density thresholds or free-flow speed baselines."
+  ]
+}

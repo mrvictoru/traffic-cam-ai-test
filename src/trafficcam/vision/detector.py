@@ -118,7 +118,11 @@ class ZeroShotDetector:
         return self._yolo_model
 
     @staticmethod
-    def _density_payload(image_path: str, detections: list[dict[str, Any]]) -> dict[str, Any]:
+    def _density_payload(
+        image_path: str,
+        detections: list[dict[str, Any]],
+        camera_id: str | None = None,
+    ) -> dict[str, Any]:
         vehicle_count = len(detections)
         mean_confidence = (
             float(np.mean([d["confidence"] for d in detections])) if detections else 0.0
@@ -126,7 +130,7 @@ class ZeroShotDetector:
 
         from .density_scorer import DensityScorer
 
-        density = DensityScorer().from_count(vehicle_count)
+        density = DensityScorer(camera_id=camera_id).from_count(vehicle_count)
         return {
             "image_path": image_path,
             "label": density,
@@ -135,7 +139,7 @@ class ZeroShotDetector:
             "vehicle_count": vehicle_count,
         }
 
-    def _analyze_owlvit(self, image_path: str) -> dict[str, Any]:
+    def _analyze_owlvit(self, image_path: str, camera_id: str | None = None) -> dict[str, Any]:
         pipe = self._get_pipeline()
         results = pipe(image_path, candidate_labels=list(self.queries))
 
@@ -158,12 +162,12 @@ class ZeroShotDetector:
                 }
             )
 
-        payload = self._density_payload(image_path, detections)
+        payload = self._density_payload(image_path, detections, camera_id=camera_id)
         payload["backend"] = self.backend
         payload["model_name"] = self.model_name
         return payload
 
-    def _analyze_yolo(self, image_path: str) -> dict[str, Any]:
+    def _analyze_yolo(self, image_path: str, camera_id: str | None = None) -> dict[str, Any]:
         model = self._get_yolo_model()
         results = model.predict(
             source=image_path,
@@ -201,12 +205,12 @@ class ZeroShotDetector:
                         }
                     )
 
-        payload = self._density_payload(image_path, detections)
+        payload = self._density_payload(image_path, detections, camera_id=camera_id)
         payload["backend"] = self.backend
         payload["model_name"] = self.model_name
         return payload
 
-    def analyze(self, image_path: str) -> dict[str, Any]:
+    def analyze(self, image_path: str, camera_id: str | None = None) -> dict[str, Any]:
         """Detect vehicles in a single image and return a structured result.
 
         Returns:
@@ -222,10 +226,10 @@ class ZeroShotDetector:
         if not image.exists():
             raise FileNotFoundError(image_path)
         if self.backend == "yolo":
-            return self._analyze_yolo(image_path)
-        return self._analyze_owlvit(image_path)
+            return self._analyze_yolo(image_path, camera_id=camera_id)
+        return self._analyze_owlvit(image_path, camera_id=camera_id)
 
-    def analyze_burst(self, frame_paths: list[str]) -> list[dict[str, Any]]:
+    def analyze_burst(self, frame_paths: list[str], camera_id: str | None = None) -> list[dict[str, Any]]:
         """Analyze a burst of frames and return per-frame results."""
-        return [self.analyze(path) for path in frame_paths]
+        return [self.analyze(path, camera_id=camera_id) for path in frame_paths]
 

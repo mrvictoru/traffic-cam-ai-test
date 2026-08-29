@@ -3,14 +3,17 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision
 RUN pip install --no-cache-dir \
-    pytest fastapi \
+    pytest fastapi "uvicorn[standard]" \
     transformers \
-    ultralytics \
-    torch torchvision \
+    "supervision>=0.25.0" \
+    matplotlib polars psutil PyYAML requests scipy ultralytics-thop \
     opencv-python-headless \
     numpy \
     Pillow
+RUN pip install --no-cache-dir --no-deps ultralytics
 
 # Copy application files
 COPY macau_dsat_feed.py ./
@@ -26,6 +29,6 @@ ENV TRANSFORMERS_CACHE=/app/model-cache/huggingface
 ENV ULTRALYTICS_HOME=/app/model-cache/ultralytics
 ENV YOLO_CONFIG_DIR=/app/model-cache/ultralytics/config
 
-# Set entrypoint to the new package CLI
+# Run the dashboard API by default so the web app is reachable on port 8000.
 ENTRYPOINT ["python", "-m", "trafficcam.cli"]
-CMD ["--mode", "discover"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]

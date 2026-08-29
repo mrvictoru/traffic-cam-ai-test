@@ -61,6 +61,54 @@ python macau_dsat_feed.py --capture-loop --output-dir frames --frame-count 3 --c
 
 This runs the discovery and capture flow repeatedly with a delay between cycles.
 
+### Audit missing camera calibration
+
+```bash
+python -m trafficcam.cli audit-config --pretty --report-file output/config-audit.json
+```
+
+This compares the current manifest against camera coordinates, density thresholds, ROIs, and flow lines, then writes a report with missing counts, missing camera IDs, and a prioritized `next_calibration_queue` for the cameras closest to fully configured.
+
+## Interpreting the traffic map
+
+The dashboard only applies green/yellow/orange/red traffic colours to analyses
+captured within the last 20 minutes. Older observations are labelled stale and
+shown in grey. Fresh observations without a per-camera free-flow calibration
+are labelled provisional; they are useful operational signals, but they are
+not routing-grade speed estimates.
+
+Approximate camera locations are hidden from the map by default to keep the
+verified corridor view readable. Enable **Approx markers** to inspect all
+discovered cameras. The sidebar continues to list every camera and exposes
+whether its location and traffic observation need attention.
+
+Human calibration is still required before the map can look like Google Maps
+live traffic:
+
+1. **Place cameras (human).** Drag markers in **Edit positions**, or edit
+   `config/camera_coordinates.json`. A first geocoding pass added exact named
+   locations for cameras 60 and 62; 103 of 111 cameras are still approximate.
+2. **Draw ROIs and flow lines (human).** Edit `config/camera_rois.json` and
+   `config/camera_flow_lines.json` against a live frame so occupancy and
+   direction are measured on the roadway. A first evidence-based pass now
+   covers 25 ROIs and 21 unambiguous single-road flow lines from the saved
+   2026-08-28 nighttime burst. See `config/camera_geometry_review.json` for
+   provenance and deliberately deferred views.
+3. **Verify remaining corridors (human).** Guia Tunnel, Sai Van Bridge, Qingmao
+   Port, and Avenida do Ouvidor Arriaga stay disabled until geometry is
+   confirmed in `config/camera_corridors.json`.
+4. **Collect 02:00–05:00 Asia/Macau motion (automated, time-gated).** Evening
+   or daytime captures can refresh live occupancy, but they must not be used as
+   free-flow speeds. Use at least 5 frames per camera.
+5. **Run `calibrate-freeflow` (automated, blocked until step 4).** Preview with
+   `--dry-run` first. Do not persist baselines from off-window samples.
+
+If rain is heavy, postpone calibration review. Rain streaks, glare, spray, and
+road reflections can reduce detector confidence and distort lane boundaries.
+Rain-affected frames may still be shown as provisional live observations, but
+should not establish ROIs, flow lines, density thresholds, or free-flow
+baselines.
+
 ## Utility scripts
 
 The repository includes helper tools for live inspection:
@@ -95,11 +143,16 @@ In Docker, the suite includes the new trend analysis tests for `TrendAnalyzer`, 
 docker build -t macau-feed .
 ```
 
-### Run the pipeline
+### Run the dashboard/API
 
 ```bash
-docker run macau-feed
+docker run --rm -p 8000:8000 macau-feed
 ```
+
+The dashboard is then available at `http://localhost:8000`. Live capture does
+not autostart in this process, so API requests remain responsive. Startup warms
+the latest-camera cache before Uvicorn reports ready; calibration coverage then
+refreshes in the background without delaying dashboard requests.
 
 ### Run tests in Docker
 
@@ -110,10 +163,33 @@ docker run --rm --entrypoint python macau-feed -m pytest -q
 ### Docker Compose
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
-If you want to pass custom arguments, edit the `docker-compose.yml` service command or override the entrypoint as needed.
+This starts the dashboard/API only. Live capture is an explicit, separate
+service so model inference and capture work cannot block the Uvicorn process:
+
+```bash
+docker compose --profile capture up --build
+```
+
+That command starts both the dashboard and `live-capture`. To run collection
+without the dashboard, target the capture service directly:
+
+```bash
+docker compose --profile capture up --build live-capture
+```
+
+The capture loop defaults to 30 cameras, five frames per cycle, and a
+300-second interval. Five frames are required for motion/speed samples; a
+1-frame cycle can only refresh occupancy. Override those values with
+`PIPELINE_LIMIT`, `PIPELINE_FRAME_COUNT`, and `PIPELINE_INTERVAL`.
+
+A one-shot collection of the six verified cameras:
+
+```bash
+docker compose --profile capture run --no-deps live-capture run-once --frame-count 5 --limit 6 --manifest-file data/manifest.json --output-dir output/live --data-dir data
+```
 
 ### Notes
 
@@ -128,5 +204,7 @@ If you want to pass custom arguments, edit the `docker-compose.yml` service comm
 - [ ] Validate the YOLO backend in a fresh live end-to-end Docker run and confirm current records are regenerated with the new metadata shape.
 - [x] Validate time-spaced burst capture against a live DSAT feed by confirming a 3-frame burst produces more than one distinct file hash.
 - [ ] Add camera geolocation data (lat/lon) so cameras can be placed accurately on a dashboard map.
-- [ ] Build a frontend/dashboard layer that visualizes the latest density by district, sub-district, and camera.
+- [x] Build a frontend/dashboard layer that visualizes the latest density by district, sub-district, and camera (`/` serves a dashboard with overview cards, camera list, and Leaflet map; `/api/overview` provides city-wide aggregates).
 - [ ] Add camera profile routing so pedestrian-dominant views can be excluded from vehicle traffic analytics.
+- [ ] Refine per-camera ROI polygons against real frames (currently conservative full-width polygons).
+- [ ] Run `python tools/calibrate_thresholds.py` after accumulating live history to replace global density thresholds with per-camera percentile-based ones.

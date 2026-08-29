@@ -9,7 +9,7 @@ Do the steps below in order. The dashboard exposes the same checklist in the
 
 ## 1. Place camera markers on the real roads (human)
 
-There are currently 105 approximate camera positions. Approximate positions
+There are currently 103 approximate camera positions. Approximate positions
 are deliberately hidden by default so the map does not imply false road
 accuracy.
 
@@ -96,6 +96,13 @@ docker compose --profile capture run --no-deps live-capture run-once \
 Daytime and evening captures are still useful for current occupancy, but they
 must not be treated as free-flow speeds.
 
+During heavy rain, do not use the affected frames for calibration review.
+Rain streaks, glare, reflections, spray, and wipers can reduce detector
+confidence and make vehicle boxes or lane boundaries unreliable. Record the
+weather condition with the capture and repeat the geometry check in a clear
+daylight window. Rain-affected observations may remain visible as provisional
+live data, but they should not be used to establish a baseline.
+
 ## 6. Preview and persist free-flow calibration (automated)
 
 Preview the cameras that have enough valid off-peak motion history:
@@ -125,15 +132,27 @@ configured. Fresh observations without calibration remain **provisional**.
 
 ## Current checkpoint status
 
-At the end of the 2026-08-28 session:
+At the 2026-08-29 calibration pass:
 
 - 111 cameras are in the manifest.
-- 30 cameras had fresh analyses from the bounded capture run.
-- All 30 were provisional; 0 were reliable or calibrated.
-- 81 cameras had no current analysis.
-- 6 camera positions were verified; 105 remained approximate.
+- 30 cameras have motion-aware analyses from the bounded capture run.
+- A free-flow dry-run found 0 eligible cameras: those 30 records were outside
+  02:00-05:00 Asia/Macau and the other 81 cameras had no motion history.
+- 25 roadway ROIs and 21 unambiguous flow lines were manually reviewed against
+  `output/live/cam_<id>/frame_005.jpg`.
+- Cameras 60, 61, 62, 63, and 69 were deliberately deferred because blur,
+  construction, complex geometry, or glare made a defensible calibration
+  impossible. Flow lines 49, 73, 79, and 82 were also deferred because one
+  line would mix multiple traffic movements.
+- 8 named camera positions were verified; 103 remained approximate. Cameras
+  60 and 62 were added from exact OpenStreetMap named-place results; ambiguous
+  road-only geocoding results were rejected.
 - 3 corridors were enabled and live; 4 remained disabled.
-- The off-peak window was closed when the session stopped.
+- All traffic remains provisional until valid off-peak free-flow history is
+  captured and calibrated.
+- Heavy rain is a data-quality warning: postpone calibration and repeat the
+  capture in clear conditions rather than treating rain-affected detections as
+  normal traffic.
 
 Do not commit generated `calib_out.txt`, `final_out.txt`, or
 `mounted_final.txt`.

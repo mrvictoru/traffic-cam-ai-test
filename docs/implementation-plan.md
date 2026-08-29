@@ -467,6 +467,8 @@ Status as of 2026-08-28:
 - [x] add explicit traffic reliability metadata and live-coverage aggregates so stale, uncalibrated, and missing observations are not presented as routing-grade live traffic
 - [x] make the dashboard suppress stale congestion colours and scores, grey out historical corridors, and explain live coverage/calibration limitations in a prominent status banner
 - [x] surface an explicit human-vs-automated calibration checklist on `/api/overview` and the dashboard so placement, ROI, corridor, and 02:00-05:00 collection work are not mistaken for finished live traffic
+- [x] manually review the saved 2026-08-28 five-frame bursts and add 25 roadway ROIs plus 21 unambiguous single-road flow lines; record five unusable views and four complex intersections as deliberately deferred in `config/camera_geometry_review.json`
+- [x] cross-check the reviewed geometry against 24 successfully captured daylight frames and add exact named-place coordinates for cameras 60 and 62; reject ambiguous road-only geocoding matches
 - [ ] populate live calibration values from additional sustained motion history once more real-world data is collected, including a 02:00-05:00 Asia/Macau capture window; evening captures may only refresh occupancy
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
 - [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
@@ -549,7 +551,7 @@ per-camera calibration.
 
 Human work that cannot be automated:
 
-- place the remaining approximate cameras (currently 105 of 111) with **Edit
+- place the remaining approximate cameras (currently 103 of 111) with **Edit
   positions** or `config/camera_coordinates.json`;
 - draw roadway ROIs and flow lines in `config/camera_rois.json` and
   `config/camera_flow_lines.json`;
@@ -562,6 +564,13 @@ Automated work that is time-gated:
 2. run scheduled capture cycles across off-peak hours (02:00–05:00 Macau local time, equivalent to 18:00–21:00 UTC on the previous date) so each camera accumulates at least `--min-history` (default 5) usable motion samples. Evening/daytime cycles can refresh live occupancy only;
 3. run `python -m trafficcam.cli calibrate-freeflow --data-dir data --dry-run` to preview which cameras are ready, then drop `--dry-run` to persist values into `config/camera_speed_calibration.json`;
 4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` climbs and the dashboard's `Need you` / calibration checklist reflect it.
+
+The 2026-08-29 free-flow dry-run returned zero eligible cameras: 30 cameras
+had motion-aware records outside the off-peak window and 81 had no motion
+history. No speed calibration was written. A density-threshold dry-run was
+also inspected but not persisted because the legacy count distributions were
+generated before the newly reviewed ROIs; mixing those counts with the new
+geometry would produce misleading thresholds.
 
 Error-path records now carry the same schema as successful ones (null motion
 values), so failed analyses no longer produce structurally inconsistent rows.

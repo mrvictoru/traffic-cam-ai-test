@@ -33,6 +33,20 @@
     "59": {
       "latitude": 22.197736392222822,
       "longitude": 113.55919361114503
+    },
+    "60": {
+      "latitude": 22.163013,
+      "longitude": 113.5731363,
+      "name": "北安圓形地",
+      "source": "OpenStreetMap Nominatim named-place centre, way 244820725",
+      "reviewed_at": "2026-08-29"
+    },
+    "62": {
+      "latitude": 22.1893055,
+      "longitude": 113.5435596,
+      "name": "亞馬喇前地",
+      "source": "OpenStreetMap Nominatim named bus-station node 7644921493",
+      "reviewed_at": "2026-08-29"
     }
   }
 }

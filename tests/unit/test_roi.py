@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from trafficcam.vision.roi import (
@@ -63,3 +64,31 @@ def test_line_to_pixels_scales_normalized_points() -> None:
     start, end = line_to_pixels(((0.1, 0.25), (0.9, 0.75)), image_width=200, image_height=100)
     assert start == (20.0, 25.0)
     assert end == (180.0, 75.0)
+
+
+def test_reviewed_geometry_configs_match_review_metadata() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    rois = load_camera_rois(repo_root / "config" / "camera_rois.json")
+    flow_lines = load_camera_flow_lines(repo_root / "config" / "camera_flow_lines.json")
+    review = json.loads(
+        (repo_root / "config" / "camera_geometry_review.json").read_text(encoding="utf-8")
+    )
+
+    assert set(rois) == set(review["roi_reviewed_camera_ids"])
+    assert set(flow_lines) == set(review["flow_line_reviewed_camera_ids"])
+    assert set(review["deferred_camera_ids"]).isdisjoint(rois)
+    assert set(review["deferred_camera_ids"]).isdisjoint(flow_lines)
+    assert set(review["deferred_flow_line_camera_ids"]).isdisjoint(flow_lines)
+
+    assert all(
+        0.0 <= coordinate <= 1.0
+        for polygon in rois.values()
+        for point in polygon
+        for coordinate in point
+    )
+    assert all(
+        0.0 <= coordinate <= 1.0
+        for line in flow_lines.values()
+        for point in line
+        for coordinate in point
+    )

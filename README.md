@@ -86,10 +86,14 @@ Human calibration is still required before the map can look like Google Maps
 live traffic:
 
 1. **Place cameras (human).** Drag markers in **Edit positions**, or edit
-   `config/camera_coordinates.json`. 105 of 111 cameras are still approximate.
+   `config/camera_coordinates.json`. A first geocoding pass added exact named
+   locations for cameras 60 and 62; 103 of 111 cameras are still approximate.
 2. **Draw ROIs and flow lines (human).** Edit `config/camera_rois.json` and
    `config/camera_flow_lines.json` against a live frame so occupancy and
-   direction are measured on the roadway.
+   direction are measured on the roadway. A first evidence-based pass now
+   covers 25 ROIs and 21 unambiguous single-road flow lines from the saved
+   2026-08-28 nighttime burst. See `config/camera_geometry_review.json` for
+   provenance and deliberately deferred views.
 3. **Verify remaining corridors (human).** Guia Tunnel, Sai Van Bridge, Qingmao
    Port, and Avenida do Ouvidor Arriaga stay disabled until geometry is
    confirmed in `config/camera_corridors.json`.
@@ -98,6 +102,12 @@ live traffic:
    free-flow speeds. Use at least 5 frames per camera.
 5. **Run `calibrate-freeflow` (automated, blocked until step 4).** Preview with
    `--dry-run` first. Do not persist baselines from off-window samples.
+
+If rain is heavy, postpone calibration review. Rain streaks, glare, spray, and
+road reflections can reduce detector confidence and distort lane boundaries.
+Rain-affected frames may still be shown as provisional live observations, but
+should not establish ROIs, flow lines, density thresholds, or free-flow
+baselines.
 
 ## Utility scripts
 

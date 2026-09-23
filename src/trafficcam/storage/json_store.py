@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -17,10 +19,18 @@ class JsonStore(StorageBackend):
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def save_json(self, path: str | Path, payload: Any) -> None:
-        """Write a JSON payload to disk."""
+        """Atomically publish a JSON payload to disk."""
         target = self.root_dir / Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(payload, indent=2, allow_nan=False),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def load_json(self, path: str | Path) -> Any:
         """Load a JSON payload from disk."""
@@ -32,7 +42,7 @@ class JsonStore(StorageBackend):
         target = self.root_dir / Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+            handle.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
 
     def load_jsonl(self, path: str | Path) -> list[Any]:
         """Load all objects from a newline-delimited JSON file."""
@@ -43,12 +53,17 @@ class JsonStore(StorageBackend):
             return [json.loads(line) for line in handle if line.strip()]
 
     def save_jsonl(self, path: str | Path, payloads: list[Any]) -> None:
-        """Write a complete newline-delimited JSON file."""
+        """Atomically replace a newline-delimited JSON file."""
         target = self.root_dir / Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("w", encoding="utf-8") as handle:
-            for payload in payloads:
-                handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                for payload in payloads:
+                    handle.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def list_records(self, prefix: str = "") -> Iterable[str]:
         """List JSON record paths under the storage root."""

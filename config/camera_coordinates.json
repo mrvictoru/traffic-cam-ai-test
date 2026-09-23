@@ -1,0 +1,52 @@
+{
+  "cameras": {
+    "49": {
+      "latitude": 22.1928,
+      "longitude": 113.5405,
+      "name": "新馬路與南灣大馬路交界",
+      "bearing": 45.0
+    },
+    "50": {
+      "latitude": 22.1952,
+      "longitude": 113.546,
+      "name": "水坑尾街與南灣大馬路交界路口",
+      "bearing": 90.0
+    },
+    "51": {
+      "latitude": 22.199216501827433,
+      "longitude": 113.56281995773317,
+      "name": "友誼大橋近港澳碼頭出口交匯處",
+      "bearing": 120.0
+    },
+    "52": {
+      "latitude": 22.1566,
+      "longitude": 113.5839,
+      "name": "友誼大橋近北安入口交匯處",
+      "bearing": 200.0
+    },
+    "58": {
+      "latitude": 22.197666856488556,
+      "longitude": 113.5584318637848,
+      "name": "外港客運碼頭 A",
+      "bearing": 270.0
+    },
+    "59": {
+      "latitude": 22.197736392222822,
+      "longitude": 113.55919361114503
+    },
+    "60": {
+      "latitude": 22.163013,
+      "longitude": 113.5731363,
+      "name": "北安圓形地",
+      "source": "OpenStreetMap Nominatim named-place centre, way 244820725",
+      "reviewed_at": "2026-08-29"
+    },
+    "62": {
+      "latitude": 22.1893055,
+      "longitude": 113.5435596,
+      "name": "亞馬喇前地",
+      "source": "OpenStreetMap Nominatim named bus-station node 7644921493",
+      "reviewed_at": "2026-08-29"
+    }
+  }
+}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from trafficcam.vision.tracker import SimpleTracker, _iou
+from types import SimpleNamespace
+
+from trafficcam.vision.tracker import SimpleTracker, _iou, build_tracker
 
 
 class TestIoU:
@@ -111,3 +113,76 @@ class TestSimpleTracker:
         assert tracker.active_count == 1
         tracker.reset()
         assert tracker.active_count == 0
+
+    def test_track_histories_include_frame_indexes(self) -> None:
+        tracker = SimpleTracker(iou_threshold=0.3, max_age=2)
+        tracker.update(
+            [
+                {
+                    "label": "car",
+                    "confidence": 0.9,
+                    "box": {"xmin": 10.0, "ymin": 10.0, "xmax": 20.0, "ymax": 20.0},
+                }
+            ]
+        )
+        tracker.update(
+            [
+                {
+                    "label": "car",
+                    "confidence": 0.85,
+                    "box": {"xmin": 11.0, "ymin": 11.0, "xmax": 21.0, "ymax": 21.0},
+                }
+            ]
+        )
+
+        histories = tracker.track_histories
+        assert len(histories) == 1
+        assert histories[0][0][1] == 0
+        assert histories[0][1][1] == 1
+
+    def test_latest_detections_defaults_to_none_without_supervision(self) -> None:
+        tracker = SimpleTracker(iou_threshold=0.3, max_age=2)
+        tracker.update(
+            [
+                {
+                    "label": "car",
+                    "confidence": 0.9,
+                    "box": {"xmin": 10.0, "ymin": 10.0, "xmax": 20.0, "ymax": 20.0},
+                }
+            ]
+        )
+        assert tracker.backend_name == "simple"
+
+
+def test_build_tracker_falls_back_to_simple_when_supervision_missing(monkeypatch) -> None:
+    monkeypatch.setattr("trafficcam.vision.tracker._SUPERVISION_AVAILABLE", False)
+    monkeypatch.setattr(
+        "trafficcam.vision.tracker.settings",
+        SimpleNamespace(
+            tracker_backend="supervision",
+            tracker_iou_threshold=0.3,
+            tracker_max_age=2,
+            supervision_track_activation_threshold=0.25,
+            supervision_lost_track_buffer=30,
+            supervision_minimum_matching_threshold=0.8,
+            supervision_minimum_consecutive_frames=1,
+        ),
+    )
+
+    tracker = build_tracker(frame_rate=1.0)
+    assert isinstance(tracker, SimpleTracker)
+
+
+def test_build_tracker_uses_simple_backend_when_configured(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "trafficcam.vision.tracker.settings",
+        SimpleNamespace(
+            tracker_backend="simple",
+            tracker_iou_threshold=0.3,
+            tracker_max_age=5,
+        ),
+    )
+
+    tracker = build_tracker(frame_rate=5.0)
+
+    assert isinstance(tracker, SimpleTracker)

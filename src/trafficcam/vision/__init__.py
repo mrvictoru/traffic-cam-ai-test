@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from .detector import ZeroShotDetector
 from .density_scorer import DensityScorer
-from .tracker import SimpleTracker
+from .tracker import SimpleTracker, SupervisionTracker, build_tracker
 from .scene import SceneClassifier
 
-__all__ = ["ZeroShotDetector", "DensityScorer", "SimpleTracker", "SceneClassifier"]
+__all__ = [
+	"ZeroShotDetector",
+	"DensityScorer",
+	"SimpleTracker",
+	"SupervisionTracker",
+	"build_tracker",
+	"SceneClassifier",
+]

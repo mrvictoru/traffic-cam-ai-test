@@ -22,6 +22,7 @@ from typing import Iterable, Sequence
 
 from .baseline import baseline_values, zscore_with_window
 from .coalesce import coalesce_incidents
+from ..health import observation_is_usable
 from ..models import (
     CoalescedIncident,
     CongestionEvent,
@@ -61,11 +62,18 @@ def _signed_side(p: Point, line: tuple[Point, Point]) -> float:
 def _crosses_line(
     p_prev: Point, p_curr: Point, line: tuple[Point, Point]
 ) -> bool:
-    """True if the segment p_prev->p_curr intersects the counting line."""
+    """True if the segment p_prev->p_curr intersects (or reaches) the line.
+
+    Reaching the line counts as crossing: at 1 fps a centroid often lands
+    exactly on the counting line between frames and would otherwise never
+    register under a strict sign-flip rule.
+    """
     s_prev = _signed_side(p_prev, line)
     s_curr = _signed_side(p_curr, line)
-    # Strict crossing: signs differ (ignoring exact-on-line edge cases).
-    return s_prev * s_curr < 0
+    if s_prev == s_curr:
+        return False
+    # Sign flip, or movement onto/from the line itself.
+    return (s_prev > 0 >= s_curr) or (s_prev <= 0 < s_curr)
 
 
 def compute_directional_flow_split(
@@ -98,9 +106,11 @@ def compute_directional_flow_split(
                 continue
             s_prev = _signed_side(p_prev, line)
             s_curr = _signed_side(p_curr, line)
-            if s_prev < 0 and s_curr > 0:
+            # Direction convention mirrors _crosses_line: arriving from the
+            # line or below (s_prev <= 0) to above it counts as northbound.
+            if s_prev <= 0 and s_curr > 0:
                 nb_ids.add(track_id)
-            elif s_prev > 0 and s_curr < 0:
+            elif s_prev >= 0 and s_curr < 0:
                 sb_ids.add(track_id)
     return FlowSplit(northbound=len(nb_ids), southbound=len(sb_ids))
 
@@ -125,10 +135,28 @@ def _load_records(store: StorageBackend, camera_id: str) -> list[dict]:
         index_entries = store.load_jsonl(index_path)
     except FileNotFoundError:
         index_entries = None
+    except (OSError, ValueError, TypeError) as exc:
+        LOGGER.warning("Ignoring invalid analysis index %s: %s", index_path, exc)
+        index_entries = None
 
     if index_entries is not None:
         records = []
+        stale_index = False
         for entry in index_entries:
+            if not isinstance(entry, dict) or not entry.get("captured_at"):
+                LOGGER.warning("Ignoring malformed entry in %s", index_path)
+                stale_index = True
+                break
+            record_path = entry.get("record_path", "")
+            try:
+                payload = store.load_json(record_path) if record_path else None
+            except (FileNotFoundError, ValueError, OSError):
+                payload = None
+            if not isinstance(payload, dict):
+                stale_index = True
+                break
+            if not observation_is_usable(payload):
+                continue
             density = str(entry.get("density", "unknown"))
             flow_total = int(entry.get("flow_total", 0))
             flow_nb = int(entry.get("flow_nb", 0))
@@ -146,11 +174,17 @@ def _load_records(store: StorageBackend, camera_id: str) -> list[dict]:
                             "total": flow_total,
                         },
                     },
-                    "_path": entry.get("record_path", ""),
+                    "_path": record_path,
                 }
             )
-        records.sort(key=lambda record: record["captured_at"])
-        return records
+        if not stale_index:
+            records.sort(key=lambda record: record["captured_at"])
+            return records
+        LOGGER.warning(
+            "Falling back to full scan for %s because %s has stale entries",
+            camera_id,
+            index_path,
+        )
 
     LOGGER.warning("Falling back to full scan for %s because %s is missing", camera_id, index_path)
     records: list[dict] = []
@@ -161,6 +195,8 @@ def _load_records(store: StorageBackend, camera_id: str) -> list[dict]:
         if not isinstance(payload, dict):
             continue
         if "captured_at" not in payload:
+            continue
+        if not observation_is_usable(payload):
             continue
         payload["_path"] = path
         records.append(payload)
@@ -176,10 +212,17 @@ def _density_from_record(record: dict) -> str | None:
     return record.get("label")
 
 
-def _flow_total_from_record(record: dict) -> int:
-    """Extract total flow rate from a record (legacy scalar or new dict)."""
+def _flow_total_from_record(record: dict) -> int | None:
+    """Extract an observed burst crossing count, preserving legacy records."""
     details = record.get("details") or {}
-    raw = details.get("flow_rate_vph", 0)
+    status = details.get("flow_count_status")
+    if status == "unavailable":
+        return None
+    raw = details.get("flow_count_per_burst")
+    if raw is None:
+        if status == "observed":
+            return None
+        raw = details.get("flow_rate_vph", 0)
     if isinstance(raw, dict):
         return int(raw.get("total", 0))
     return int(raw)
@@ -315,12 +358,17 @@ def detect_incidents(
         )
 
         # Flow drop: sharply lower than baseline.
-        z_flow = zscore_with_window(
-            flow_series[i],
-            flow_baseline,
-            severity_cap=severity_cap,
+        current_flow = flow_series[i]
+        z_flow = (
+            zscore_with_window(
+                current_flow,
+                flow_baseline,
+                severity_cap=severity_cap,
+            )
+            if current_flow is not None
+            else 0.0
         )
-        if z_flow <= -z_threshold:
+        if current_flow is not None and z_flow <= -z_threshold:
             incidents.append(
                 IncidentEvent(
                     camera_id=camera_id,
@@ -328,7 +376,7 @@ def detect_incidents(
                     timestamp=ts,
                     severity=abs(z_flow),
                     details={
-                        "flow_total": flow_series[i],
+                        "flow_total": current_flow,
                         "baseline_mean": statistics.fmean(flow_baseline),
                         "baseline_stdev": statistics.stdev(flow_baseline)
                         if len(flow_baseline) > 1

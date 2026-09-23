@@ -1,0 +1,9 @@
+{
+  "cameras": {
+    "49": {"light": 4, "moderate": 10, "heavy": 16},
+    "50": {"light": 4, "moderate": 10, "heavy": 16},
+    "51": {"light": 6, "moderate": 14, "heavy": 24},
+    "52": {"light": 6, "moderate": 14, "heavy": 24},
+    "58": {"light": 4, "moderate": 9, "heavy": 14}
+  }
+}

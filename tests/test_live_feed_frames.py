@@ -2,7 +2,12 @@ import subprocess
 import unittest
 from pathlib import Path
 
+import pytest
+
 from macau_dsat_feed import DEFAULT_INDEX_URL, extract_camera_entries, extract_stream_urls, fetch_text
+
+
+pytestmark = pytest.mark.live
 
 
 class LiveFeedFrameExtractionTests(unittest.TestCase):

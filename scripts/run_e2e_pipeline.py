@@ -24,6 +24,10 @@ except Exception:  # pragma: no cover
     _SUPERVISION_AVAILABLE = False
 
 from trafficcam.analysis.trends import TrendAnalyzer, compute_directional_flow_split
+from trafficcam.health import (
+    CURRENT_ANALYSIS_SCHEMA_VERSION,
+    observation_is_usable,
+)
 from trafficcam.analysis.temporal import (
     adjusted_congestion_score,
     load_camera_baseline,
@@ -33,6 +37,7 @@ from trafficcam.config import settings
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
 from trafficcam.models import FlowSplit
 from trafficcam.storage.json_store import JsonStore
+from trafficcam.storage.index import append_to_index, rebuild_camera_index
 from trafficcam.vision import ZeroShotDetector, SceneClassifier, build_tracker
 from trafficcam.vision.density_scorer import DensityScorer
 from trafficcam.vision.speed_estimator import (
@@ -193,10 +198,12 @@ def _analyze_burst(
     roi_polygon: list[list[float]] | None = None,
     flow_line: tuple[tuple[float, float], tuple[float, float]] | None = None,
     data_dir: str | Path | None = None,
+    detector: ZeroShotDetector | None = None,
+    scene_classifier: SceneClassifier | None = None,
 ) -> dict[str, Any]:
     """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
-    detector = ZeroShotDetector()
-    scene_classifier = SceneClassifier()
+    detector = detector if detector is not None else ZeroShotDetector()
+    scene_classifier = scene_classifier if scene_classifier is not None else SceneClassifier()
     tracker = build_tracker(frame_rate=float(capture_result.get("sample_fps") or 1.0))
 
     per_frame_results: list[dict[str, Any]] = []
@@ -220,6 +227,7 @@ def _analyze_burst(
             if flow_line_pixels is None and flow_line:
                 flow_line_pixels = line_to_pixels(flow_line, width, height)
                 flow_counter = _build_line_counter(flow_line_pixels)
+        scorer = DensityScorer(camera_id=camera_id)
         if roi_polygon:
             filtered_detections = filter_detections_to_roi(
                 detection.get("detections", []),
@@ -229,6 +237,7 @@ def _analyze_burst(
             )
             detection["detections"] = filtered_detections
             detection["vehicle_count"] = len(filtered_detections)
+            detection["label"] = scorer.from_count(len(filtered_detections))
             detection["confidence"] = round(
                 (
                     sum(d["confidence"] for d in filtered_detections)
@@ -248,7 +257,6 @@ def _analyze_burst(
             )
         else:
             coverage_ratio = None
-        scorer = DensityScorer(camera_id=camera_id)
         congestion_score = scorer.score(
             coverage_ratio=coverage_ratio,
             count=detection.get("vehicle_count", 0),
@@ -327,6 +335,7 @@ def _analyze_burst(
         if per_frame_results
         else None
     )
+    raw_mean_score = mean_score
     density_counts: dict[str, int] = {}
     for r in per_frame_results:
         density_counts[r["density"]] = density_counts.get(r["density"], 0) + 1
@@ -405,7 +414,8 @@ def _analyze_burst(
             mean_confidence,
         )
     flow_split = FlowSplit()
-    if flow_line and frame_width > 0 and frame_height > 0:
+    flow_count_available = bool(flow_line and frame_width > 0 and frame_height > 0)
+    if flow_count_available:
         flow_split = compute_directional_flow_split(
             tracker.track_histories,
             line_to_pixels(flow_line, frame_width, frame_height),
@@ -415,14 +425,22 @@ def _analyze_burst(
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return {
+        "schema_version": CURRENT_ANALYSIS_SCHEMA_VERSION,
         "camera_id": camera_id,
         "captured_at": captured_at,
         "label": density_calibrated,
+        "health": {
+            "overall": "healthy",
+            "usable": True,
+            "capture": {"status": capture_result.get("status", "complete")},
+            "analysis": {"status": "ok"},
+        },
         "details": {
             "density": density_calibrated,
             "vehicle_count": mean_vehicle_count,
             "total_detections_burst": total_vehicles,
             "congestion_score": mean_score if mean_score is not None else 0.0,
+            "raw_congestion_score": raw_mean_score,
             "coverage_ratio": round(mean_coverage, 4) if mean_coverage is not None else None,
             "mean_confidence": round(mean_confidence, 4),
             "active_tracks": tracker.active_count,
@@ -440,6 +458,15 @@ def _analyze_burst(
             # NOTE: despite the legacy name, these are line crossings observed
             # during this short burst — not vehicles per hour.
             "flow_rate_vph": flow_split.to_dict(),
+            "flow_count_per_burst": (
+                flow_split.to_dict() if flow_count_available else None
+            ),
+            "flow_count_status": (
+                "observed" if flow_count_available else "unavailable"
+            ),
+            "flow_count_unavailable_reason": (
+                None if flow_count_available else "flow_line_not_configured"
+            ),
             "line_crossings": line_crossings,
             "tracking_backend": getattr(tracker, "backend_name", "simple"),
             "frame_count": len(frame_paths),
@@ -452,6 +479,8 @@ def _analyze_burst(
                 "stream_url": capture_result.get("stream_url"),
                 "sample_fps": capture_result.get("sample_fps"),
                 "warmup_seconds": capture_result.get("warmup_seconds"),
+                "status": capture_result.get("status"),
+                "error": capture_result.get("error"),
                 "roi_applied": bool(roi_polygon),
                 "debug_frames_dir": str(debug_output_dir) if debug_output_dir is not None else None,
             },
@@ -469,10 +498,12 @@ def _run_single_cycle(
     warmup_seconds: float,
     roi_registry: dict[str, list[list[float]]],
     flow_line_registry: dict[str, tuple[tuple[float, float], tuple[float, float]]],
+    analysis_runtime: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run one capture-and-analyze cycle. Returns capture_results and analysis_records."""
     capture_results: list[dict[str, Any]] = []
     analysis_records: list[dict[str, Any]] = []
+    runtime = analysis_runtime if analysis_runtime is not None else {}
 
     for camera in cameras:
         camera_id = str(camera.get("cam_id") or camera.get("camera_id") or "unknown")
@@ -498,13 +529,51 @@ def _run_single_cycle(
                 "error": str(exc),
             }
         capture_results.append(capture)
+        capture_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        capture_status = str(capture.get("status") or "failed")
+        capture_attempt = {
+            "schema_version": 1,
+            "camera_id": camera_id,
+            "captured_at": capture_ts,
+            "health": {
+                "overall": "healthy" if capture_status == "complete" else "unavailable",
+                "usable": capture_status == "complete",
+                "capture": {
+                    "status": capture_status,
+                    "returncode": capture.get("returncode"),
+                    "decoded_frame_count": capture.get("decoded_frame_count", 0),
+                    "requested_frame_count": frame_count,
+                    "error": capture.get("error"),
+                },
+            },
+            "stream_url": capture.get("stream_url"),
+        }
+        capture_record_path = f"capture_attempts/{camera_id}/{capture_ts.replace(':', '').replace('-', '')}.json"
+        suffix = 1
+        while (Path(store.root_dir) / capture_record_path).exists():
+            capture_record_path = (
+                f"capture_attempts/{camera_id}/"
+                f"{capture_ts.replace(':', '').replace('-', '')}_{suffix}.json"
+            )
+            suffix += 1
+        store.save_json(capture_record_path, capture_attempt)
 
-        if not capture["frame_paths"]:
+        if capture.get("status") != "complete" or not capture["frame_paths"]:
+            LOGGER.warning(
+                "Skipping analysis for camera %s: capture status=%s error=%s",
+                camera_id,
+                capture.get("status", "failed"),
+                capture.get("error"),
+            )
             continue
 
         # Isolate analysis failures so one broken model/camera cannot abort
         # the remaining cameras in the cycle.
         try:
+            if "detector" not in runtime:
+                runtime["detector"] = ZeroShotDetector()
+            if "scene_classifier" not in runtime:
+                runtime["scene_classifier"] = SceneClassifier()
             analysis = _analyze_burst(
                 capture["frame_paths"],
                 camera_id,
@@ -512,13 +581,22 @@ def _run_single_cycle(
                 roi_polygon=roi_polygon,
                 flow_line=flow_line,
                 data_dir=data_root,
+                detector=runtime["detector"],
+                scene_classifier=runtime["scene_classifier"],
             )
         except Exception as exc:
             LOGGER.exception("Analysis failed for camera %s; recording error", camera_id)
             analysis = {
+                "schema_version": CURRENT_ANALYSIS_SCHEMA_VERSION,
                 "camera_id": camera_id,
                 "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "label": "unknown",
+                "health": {
+                    "overall": "failed",
+                    "usable": False,
+                    "capture": {"status": capture.get("status", "complete")},
+                    "analysis": {"status": "failed", "error": str(exc)},
+                },
                 "details": {
                     "density": "unknown",
                     "vehicle_count": 0,
@@ -537,6 +615,9 @@ def _run_single_cycle(
                     "moving_vehicle_count": 0,
                     "baseline": None,
                     "flow_rate_vph": {"northbound": 0, "southbound": 0, "total": 0},
+                    "flow_count_per_burst": None,
+                    "flow_count_status": "unavailable",
+                    "flow_count_unavailable_reason": "analysis_failed",
                     "line_crossings": {"in": 0, "out": 0, "total": 0},
                     "frame_count": 0,
                     "per_frame": [],
@@ -546,6 +627,8 @@ def _run_single_cycle(
                         "district": capture.get("district"),
                         "sub_district": capture.get("sub_district"),
                         "stream_url": capture.get("stream_url"),
+                        "status": capture.get("status"),
+                        "error": capture.get("error"),
                         "roi_applied": bool(roi_polygon),
                         "debug_frames_dir": None,
                     },
@@ -562,6 +645,11 @@ def _run_single_cycle(
             record_path = f"analyses/{camera_id}/{ts}_{suffix}.json"
             suffix += 1
         store.save_json(record_path, analysis)
+        if observation_is_usable(analysis):
+            try:
+                append_to_index(store, camera_id, analysis, record_path)
+            except (OSError, ValueError, TypeError, KeyError):
+                LOGGER.exception("Failed to update analysis index for camera %s", camera_id)
 
     return capture_results, analysis_records
 
@@ -600,6 +688,15 @@ def run_pipeline(
         cameras = cameras[:limit]
 
     store = JsonStore(data_root)
+    camera_ids = sorted(
+        {str(c.get("cam_id") or c.get("camera_id") or "unknown") for c in cameras}
+    )
+    for camera_id in camera_ids:
+        try:
+            rebuild_camera_index(store, camera_id)
+        except (OSError, ValueError, TypeError):
+            LOGGER.exception("Failed to rebuild analysis index for camera %s", camera_id)
+
     capturer = FrameCapturer(output_dir=output_root)
     roi_registry = (
         load_camera_rois(settings.roi_config_path)
@@ -609,6 +706,10 @@ def run_pipeline(
     flow_line_registry = load_camera_flow_lines(settings.flow_line_config_path)
     all_capture_results: list[dict[str, Any]] = []
     all_analysis_records: list[dict[str, Any]] = []
+    collect_results = max_cycles is not None or interval <= 0
+    analysis_runtime: dict[str, Any] = {}
+    analyzer = TrendAnalyzer(store)
+    incident_summaries: dict[str, Any] = {}
 
     cycle = 0
     while max_cycles is None or cycle < max_cycles:
@@ -622,9 +723,23 @@ def run_pipeline(
             warmup_seconds=settings.capture_warmup_seconds,
             roi_registry=roi_registry,
             flow_line_registry=flow_line_registry,
+            analysis_runtime=analysis_runtime,
         )
-        all_capture_results.extend(capture_results)
-        all_analysis_records.extend(analysis_records)
+        if collect_results:
+            all_capture_results.extend(capture_results)
+            all_analysis_records.extend(analysis_records)
+
+        for camera_id in camera_ids:
+            try:
+                incidents = analyzer.detect_incidents(
+                    camera_id,
+                    z_threshold=settings.trend_z_threshold,
+                    min_history=settings.trend_min_history,
+                    persist=True,
+                )
+                incident_summaries[camera_id] = len(incidents)
+            except Exception:
+                LOGGER.exception("Incident processing failed for camera %s", camera_id)
 
         cycle += 1
         if max_cycles is None and interval <= 0:
@@ -634,16 +749,6 @@ def run_pipeline(
 
         if interval > 0:
             time.sleep(interval)
-
-    # Trend analysis: run incident detection for each camera
-    analyzer = TrendAnalyzer(store)
-    camera_ids = sorted(
-        {str(c.get("cam_id") or c.get("camera_id") or "unknown") for c in cameras}
-    )
-    incident_summaries: dict[str, Any] = {}
-    for camera_id in camera_ids:
-        incidents = analyzer.detect_incidents(camera_id, persist=True)
-        incident_summaries[camera_id] = len(incidents)
 
     return {
         "analysis_count": len(all_analysis_records),

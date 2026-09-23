@@ -72,6 +72,8 @@ def test_render_map_page_embeds_corridor_and_calibration_payload(monkeypatch) ->
     assert "Human calibration required" in html
     assert "02:00–05:00 Asia/Macau" in html
     assert "Use Edit positions for camera placement." in html
+    assert "split.northbound ?? split.in ?? 0" in html
+    assert "const firstDirection = hasCardinalFlow ? 'NB' : 'in';" in html
 
 
 def test_payload_falls_back_when_overview_is_unavailable(monkeypatch) -> None:
@@ -85,3 +87,19 @@ def test_payload_falls_back_when_overview_is_unavailable(monkeypatch) -> None:
     payload = json.loads(map_page._payload(None))
 
     assert payload == {"cameras": [], "overview": {}}
+
+
+def test_default_payload_store_uses_pipeline_data_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PIPELINE_DATA_DIR", str(tmp_path / "configured-data"))
+    observed = {}
+
+    def capture_store(store=None):
+        observed["store"] = store
+        return []
+
+    monkeypatch.setattr(map_page, "build_camera_summaries", capture_store)
+    monkeypatch.setattr(map_page, "get_overview", lambda store=None: {})
+
+    map_page._payload(None)
+
+    assert observed["store"].root_dir == tmp_path / "configured-data"

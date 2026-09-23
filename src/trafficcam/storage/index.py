@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import logging
 
+from ..health import observation_is_usable
 from .base import StorageBackend
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,12 +46,14 @@ def append_to_index(
     record_path: str,
 ) -> None:
     """Append a single analysis record summary to the camera's JSONL index."""
+    if not observation_is_usable(record):
+        return
     entry = build_index_entry(record, record_path)
     store.append_jsonl(f"analyses/{camera_id}/index.jsonl", asdict(entry))
 
 
 def rebuild_camera_index(store: StorageBackend, camera_id: str) -> None:
-    """Rebuild a camera's JSONL index from its persisted analysis records."""
+    """Rebuild a camera's JSONL projection from usable persisted analyses."""
     prefix = f"analyses/{camera_id}/"
     entries: list[dict] = []
     for record_path in store.list_records(prefix=prefix):
@@ -55,7 +61,12 @@ def rebuild_camera_index(store: StorageBackend, camera_id: str) -> None:
             continue
         if not record_path.endswith(".json"):
             continue
-        record = store.load_json(record_path)
-        entries.append(asdict(build_index_entry(record, record_path)))
-    entries.sort(key=lambda entry: entry["captured_at"])
+        try:
+            record = store.load_json(record_path)
+            if not isinstance(record, dict) or not observation_is_usable(record):
+                continue
+            entries.append(asdict(build_index_entry(record, record_path)))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            LOGGER.warning("Skipping invalid analysis record %s during index rebuild: %s", record_path, exc)
+    entries.sort(key=lambda entry: (entry["captured_at"], entry["record_path"]))
     store.save_jsonl(f"analyses/{camera_id}/index.jsonl", entries)

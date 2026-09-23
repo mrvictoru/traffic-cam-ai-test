@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
+from ..health import CURRENT_ANALYSIS_SCHEMA_VERSION, observation_is_usable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,7 +39,7 @@ Z_DEADBAND = 1.5
 _DENSITY_ORDINAL = {"light": 0, "moderate": 1, "heavy": 2, "blocked": 3}
 
 # Cache: data_dir -> (mtime_key, {camera_id: {bucket_key: [values]}})
-_SCORE_CACHE: dict[str, tuple[tuple, dict]] = {}
+_SCORE_CACHE: dict[tuple[str, str], tuple[tuple, dict]] = {}
 
 
 def hour_bucket_key(captured_at: str) -> str:
@@ -81,10 +83,22 @@ def _load_score_history(
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("schema_version") != CURRENT_ANALYSIS_SCHEMA_VERSION:
+            continue
         details = record.get("details") or {}
-        score = details.get("congestion_score")
+        if not isinstance(details, dict):
+            continue
+        if not observation_is_usable(record):
+            continue
+        score = details.get("raw_congestion_score")
         ts = _parse_ts(str(record.get("captured_at") or ""))
-        if not isinstance(score, (int, float)) or ts is None:
+        if (
+            not isinstance(score, (int, float))
+            or not math.isfinite(float(score))
+            or ts is None
+        ):
             continue
         if ts.timestamp() < cutoff:
             continue
@@ -105,11 +119,34 @@ def baseline_for_bucket(
     key = hour_bucket_key(target_captured_at)
     if not key:
         return (float("nan"), 0)
-    entry = history.get(key) or {}
-    scores = entry.get("scores") or []
+    scores = _prior_bucket_scores(history, target_captured_at, key)
     if len(scores) < MIN_BASELINE_SAMPLES:
         return (float("nan"), len(scores))
     return (statistics.fmean(scores), len(scores))
+
+
+def _prior_bucket_scores(
+    history: dict[str, dict[str, list[float]]],
+    target_captured_at: str,
+    key: str | None = None,
+) -> list[float]:
+    target = _parse_ts(target_captured_at)
+    if target is None:
+        return []
+    bucket_key = key or hour_bucket_key(target_captured_at)
+    entry = history.get(bucket_key) or {}
+    scores = entry.get("scores") or []
+    timestamps = entry.get("timestamps") or []
+    target_timestamp = target.timestamp()
+    return [
+        float(score)
+        for score, timestamp in zip(scores, timestamps)
+        if isinstance(score, (int, float))
+        and math.isfinite(float(score))
+        and isinstance(timestamp, (int, float))
+        and math.isfinite(float(timestamp))
+        and float(timestamp) < target_timestamp
+    ]
 
 
 def temporal_adjustment(
@@ -156,7 +193,7 @@ def adjusted_congestion_score(
         return round(current_score, 2), meta
 
     key = hour_bucket_key(captured_at)
-    scores = (history.get(key) or {}).get("scores") or []
+    scores = _prior_bucket_scores(history, captured_at, key)
     stdev = statistics.stdev(scores) if len(scores) > 1 else 0.0
     adjustment = temporal_adjustment(current_score, mean, stdev)
     adjusted = max(0.0, min(100.0, current_score + adjustment))
@@ -179,11 +216,12 @@ def load_camera_baseline(
     root = Path(data_dir)
     analyses_root = root / "analyses"
     cache_sig = _directory_signature(analyses_root / camera_id)
-    cached = _SCORE_CACHE.get(str(root))
+    cache_key = (str(root.resolve()), str(camera_id))
+    cached = _SCORE_CACHE.get(cache_key)
     if cached and cached[0] == cache_sig:
         return cached[1]
     history = _load_score_history(analyses_root, str(camera_id))
-    _SCORE_CACHE[str(root)] = (cache_sig, history)
+    _SCORE_CACHE[cache_key] = (cache_sig, history)
     return history
 
 

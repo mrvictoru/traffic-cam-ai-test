@@ -269,6 +269,8 @@ def test_get_camera_returns_latest_detail(tmp_path: Path) -> None:
         assert detail["vehicle_count"] == 42
         assert detail["stream_url"] == "https://example/stream.m3u8"
         assert detail["flow_rate_vph"]["total"] == 11
+        assert detail["flow_count_per_burst"] is None
+        assert detail["flow_count_status"] == "legacy_unknown"
         assert detail["per_frame"][0]["vehicle_count"] == 42
         assert detail["map_position"]["source"] == "coordinates"
         assert detail["calibration"] == {
@@ -292,7 +294,7 @@ def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: py
                         "district": "澳門區",
                         "sub_district": "外港",
                         "detail_url": "https://example/detail",
-                        "stream_urls": ["https://example/stream.m3u8"],
+                        "stream_urls": ["https://example/stream.m3u8?token=opaque"],
                     }
                 ]
             },
@@ -309,7 +311,7 @@ def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: py
     assert detail["camera_id"] == "59"
     assert detail["name"] == "New Discovery"
     assert detail["density"] == "unknown"
-    assert detail["stream_url"] == "https://example/stream.m3u8"
+    assert detail["stream_url"] == "https://example/stream.m3u8?token=opaque"
     assert detail["latest_image_url"] is None
     assert detail["per_frame"] == []
     assert detail["map_position"]["source"] == "approximate"
@@ -322,6 +324,24 @@ def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: py
         "sample_count": None,
         "offpeak_hours": None,
     }
+
+
+def test_manifest_path_defaults_to_pipeline_manifest_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = tmp_path / "pipeline-manifest.json"
+    manifest_path.write_text(
+        json.dumps({"cameras": [{"cam_id": "pipeline-camera", "stream_urls": []}]}),
+        encoding="utf-8",
+    )
+    with monkeypatch.context() as local_patch:
+        local_patch.delenv("CAMERA_MANIFEST_PATH", raising=False)
+        local_patch.setenv("PIPELINE_MANIFEST_FILE", str(manifest_path))
+        module = reload(routes)
+        assert [camera["cam_id"] for camera in module._load_manifest_cameras()] == [
+            "pipeline-camera"
+        ]
+    reload(routes)
 
 
 def test_get_camera_cache_busts_frame_urls(tmp_path: Path) -> None:
@@ -392,6 +412,12 @@ def test_get_camera_history_returns_recent_records(tmp_path: Path) -> None:
         "2026-06-24T09:00:00Z",
     ]
     assert history[-1]["density"] == "blocked"
+
+
+def test_default_api_store_uses_pipeline_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PIPELINE_DATA_DIR", str(tmp_path / "configured-data"))
+    module = reload(routes)
+    assert module._default_store().root_dir == tmp_path / "configured-data"
 
 
 def test_update_camera_position_persists_coordinates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

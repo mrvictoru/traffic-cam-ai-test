@@ -138,16 +138,21 @@ Orchestrate capture jobs for discovered cameras and feeds.
 - `FrameCapturer`
   - Constructor: `FrameCapturer(output_dir: str | Path | None = None, ffmpeg_runner: FFmpegRunner | None = None)`
     - Creates and owns an output directory.
-    - Uses `FFmpegRunner` for actual frame capture.
+    - Uses the configured `FFmpegRunner` for actual frame capture.
 
 - `capture(cameras: Iterable[CameraFeed], frame_count: int = 1) -> list[CaptureResult]`
-  - Placeholder implementation that writes stub bytes.
-  - Returns `CaptureResult` objects containing `camera_id`, `output_path`, `success`, and `notes`.
+  - Unsupported legacy object API. It raises `NotImplementedError` rather than
+    fabricating successful placeholder bytes.
 
 - `capture_frames_from_manifest(manifest: dict, frame_count: int = 3, ffmpeg_path: list[str] | None = None) -> list[dict]`
   - Extracts cameras from the manifest.
-  - Selects the first `.m3u8` stream URL per camera.
-  - Runs `ffmpeg` and writes frames into a camera-specific output subdirectory.
+  - Selects the first HTTP(S) HLS URL by parsed path, preserving query
+    parameters.
+  - Runs `ffmpeg` in a staging directory and publishes frames only when the
+    exit code is zero, exactly `frame_count` JPEGs decode successfully, and
+    all frames have the same positive dimensions.
+  - Failed or partial attempts retain the previous published burst and return
+    an explicit `status`/`error` with no analyzable `frame_paths`.
   - Returns a list of result dictionaries containing:
     - `cam_id`
     - `stream_url`
@@ -286,6 +291,14 @@ Detect traffic trends and anomalous incidents from persisted analysis history.
   - Output: `FlowSplit` object with `northbound`, `southbound`, and `total` counts.
   - Behavior:
     - Detects line crossings and assigns direction based on signed distance.
+    - Counts crossings observed in one analyzed burst; this is not an hourly rate.
+
+Successful analysis records expose the count as `details.flow_count_per_burst`
+when a flow line is configured, with `flow_count_status` set to `observed`.
+Without a configured line, the explicit count is `null` and status is
+`unavailable`; failed analysis reports `analysis_failed`. The older
+`details.flow_rate_vph` field remains for compatibility and should not be
+interpreted as vehicles per hour.
 
 - `detect_congestion_events(records: Sequence[dict], camera_id: str, density_levels: set[str]) -> list[CongestionEvent]`
   - Input: ordered records for one camera and a set like `{"heavy", "blocked"}`.
@@ -298,6 +311,7 @@ Detect traffic trends and anomalous incidents from persisted analysis history.
     - Computes flow and density baselines using `analysis/baseline.py`.
     - Flags flows far below baseline as `flow_drop`.
     - Flags density ordinals far above baseline as `density_spike`.
+    - Excludes explicitly unavailable burst-crossing measurements from flow baselines and flow-drop checks; legacy records retain their historical interpretation.
 
 - `TrendAnalyzer`
   - Constructor: `TrendAnalyzer(store: StorageBackend, *, window_records: int = 288, hour_buckets: int = 24, cooldown_minutes: float = 10.0)`
@@ -360,6 +374,11 @@ File-based JSON storage for pipeline artifacts.
 
 - `list_records(prefix)` now matches prefixes exactly rather than substring matching.
 - JSONL support is used for per-camera indexes.
+- `save_json` and `save_jsonl` publish through a same-directory temporary file
+  and atomic replacement, preserving the previous file if replacement fails.
+- The analysis index is a rebuildable projection of usable analysis records;
+  invalid records are excluded and the pipeline rebuilds it at startup before
+  appending new analysis summaries.
 
 ### Usage
 
@@ -385,10 +404,11 @@ Maintain a compact JSONL index per camera for faster record loading.
   - Converts a full analysis record to a compact index entry.
 
 - `append_to_index(store: StorageBackend, camera_id: str, record: dict, record_path: str) -> None`
-  - Appends one index line to `analyses/{camera_id}/index.jsonl`.
+  - Appends one usable analysis summary to `analyses/{camera_id}/index.jsonl`.
 
 - `rebuild_camera_index(store: StorageBackend, camera_id: str) -> None`
-  - Rebuilds the entire index for a camera by scanning all persisted JSON records.
+  - Rebuilds the index for a camera from persisted usable analysis records,
+    deterministically ordered by timestamp and record path.
 
 ### Usage
 

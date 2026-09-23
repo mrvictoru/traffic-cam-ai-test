@@ -19,6 +19,8 @@ RUN pip install --no-cache-dir --no-deps ultralytics
 COPY macau_dsat_feed.py ./
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+COPY config/ ./config/
+COPY tools/ ./tools/
 COPY tests/ ./tests/
 COPY pytest.ini ./pytest.ini
 

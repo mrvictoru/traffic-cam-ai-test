@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,19 @@ class TestBaselineForBucket:
     def test_missing_bucket(self) -> None:
         mean, count = baseline_for_bucket({}, "2026-08-25T08:15:00Z")
         assert count == 0
+        assert mean != mean
+
+    def test_future_and_current_samples_are_excluded(self) -> None:
+        target = "2026-08-25T08:15:00Z"
+        target_ts = datetime.fromisoformat(target.replace("Z", "+00:00")).timestamp()
+        history = {
+            "tue_08": {
+                "scores": [20.0, 40.0, 90.0],
+                "timestamps": [target_ts - 60, target_ts, target_ts + 60],
+            }
+        }
+        mean, count = baseline_for_bucket(history, target)
+        assert count == 1
         assert mean != mean
 
 
@@ -102,9 +116,10 @@ class TestLoadCameraBaseline:
         cam_dir.mkdir(parents=True)
         for idx, score in enumerate([40.0, 42.0, 41.0, 43.0, 44.0]):
             record = {
+                "schema_version": 2,
                 "camera_id": "49",
                 "captured_at": f"2026-08-20T03:0{idx}:00Z",
-                "details": {"congestion_score": score},
+                "details": {"congestion_score": score, "raw_congestion_score": score},
             }
             (cam_dir / f"20260820030{idx}00.json").write_text(
                 json.dumps(record), encoding="utf-8"
@@ -116,6 +131,70 @@ class TestLoadCameraBaseline:
 
     def test_missing_camera_returns_empty(self, tmp_path: Path) -> None:
         assert load_camera_baseline(tmp_path, "999") == {}
+
+    def test_failed_observations_are_excluded(self, tmp_path: Path) -> None:
+        cam_dir = tmp_path / "analyses" / "49"
+        cam_dir.mkdir(parents=True)
+        for idx, score in enumerate([40.0, 42.0, 41.0, 43.0, 44.0]):
+            record = {
+                "schema_version": 2,
+                "camera_id": "49",
+                "captured_at": f"2026-08-20T03:0{idx}:00Z",
+                "details": {"congestion_score": score},
+                "health": {"overall": "failed", "usable": False},
+            }
+            (cam_dir / f"failed{idx}.json").write_text(json.dumps(record), encoding="utf-8")
+        history = load_camera_baseline(tmp_path, "49")
+        assert history == {}
+
+    def test_camera_cache_isolated_and_raw_score_preferred(self, tmp_path: Path) -> None:
+        for camera_id, score in (("49", 40.0), ("50", 80.0)):
+            cam_dir = tmp_path / "analyses" / camera_id
+            cam_dir.mkdir(parents=True)
+            record = {
+                "schema_version": 2,
+                "camera_id": camera_id,
+                "captured_at": "2026-08-20T03:00:00Z",
+                "details": {
+                    "congestion_score": score + 15.0,
+                    "raw_congestion_score": score,
+                    "baseline": {"baseline_applied": True},
+                },
+            }
+            (cam_dir / "record.json").write_text(json.dumps(record), encoding="utf-8")
+
+        first = load_camera_baseline(tmp_path, "49")
+        second = load_camera_baseline(tmp_path, "50")
+        assert first["thu_03"]["scores"] == [40.0]
+        assert second["thu_03"]["scores"] == [80.0]
+
+    def test_adjusted_legacy_scores_are_not_baseline_evidence(self, tmp_path: Path) -> None:
+        cam_dir = tmp_path / "analyses" / "49"
+        cam_dir.mkdir(parents=True)
+        record = {
+            "camera_id": "49",
+            "captured_at": "2026-08-20T03:00:00Z",
+            "details": {
+                "congestion_score": 70.0,
+                "baseline": {"baseline_applied": True},
+            },
+        }
+        (cam_dir / "record.json").write_text(json.dumps(record), encoding="utf-8")
+        assert load_camera_baseline(tmp_path, "49") == {}
+
+    def test_unknown_schema_score_is_not_baseline_evidence(self, tmp_path: Path) -> None:
+        cam_dir = tmp_path / "analyses" / "49"
+        cam_dir.mkdir(parents=True)
+        record = {
+            "camera_id": "49",
+            "captured_at": "2026-08-20T03:00:00Z",
+            "details": {
+                "congestion_score": 70.0,
+                "raw_congestion_score": 60.0,
+            },
+        }
+        (cam_dir / "record.json").write_text(json.dumps(record), encoding="utf-8")
+        assert load_camera_baseline(tmp_path, "49") == {}
 
 
 class TestDensityOrdinal:

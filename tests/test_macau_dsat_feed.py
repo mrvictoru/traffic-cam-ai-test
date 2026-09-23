@@ -148,6 +148,7 @@ class CaptureFramesTests(unittest.TestCase):
                 textwrap.dedent(
                     """
                     import pathlib
+                    import base64
                     import sys
 
                     args = sys.argv[1:]
@@ -155,9 +156,13 @@ class CaptureFramesTests(unittest.TestCase):
                     pattern = args[-1]
                     output_dir = pathlib.Path(pattern).parent
                     output_dir.mkdir(parents=True, exist_ok=True)
+                    data = base64.b64decode(
+                        " /9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////"
+                        "2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAACD/2gAIAQEAAQUCcf/EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8BP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8BP//EABQQAQAAAAAAAAAAAAAAAAAAACD/2gAIAQEABj8Cf//Z"
+                    )
                     for idx in range(1, frame_count + 1):
                         out_path = output_dir / f"frame_{idx:03d}.jpg"
-                        out_path.write_bytes(b"fake-image")
+                        out_path.write_bytes(data)
                     sys.exit(0)
                     """
                 ).strip()

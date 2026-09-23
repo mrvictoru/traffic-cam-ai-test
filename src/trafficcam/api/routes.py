@@ -18,8 +18,16 @@ from trafficcam.calibration import (
     summarize_calibration_coverage,
 )
 from trafficcam.storage.json_store import JsonStore
+from trafficcam.health import observation_is_usable
+from trafficcam.ingestion.stream_urls import select_hls_url
 
 router = APIRouter()
+
+
+def _default_store() -> JsonStore:
+    """Use the same configured data root as the capture pipeline."""
+    return JsonStore(os.getenv("PIPELINE_DATA_DIR", "data"))
+
 
 # Optional hand-seeded camera coordinates (cam_id -> lat/lon) used to place
 # markers on the real map. Path is configurable for tests and deployments.
@@ -140,6 +148,7 @@ def _load_analyses(store: JsonStore) -> list[dict[str, Any]]:
         for path in store.list_records(prefix="analyses/")
         if path.endswith(".json")
     ]
+    records = [record for record in records if observation_is_usable(record)]
     if signature is not None:
         _ANALYSES_CACHE["key"] = signature
         _ANALYSES_CACHE["records"] = records
@@ -159,9 +168,11 @@ def _load_latest_analysis_from_dir(camera_dir: Path) -> dict[str, Any] | None:
     )
     for path in record_paths:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if isinstance(record, dict) and observation_is_usable(record):
+            return record
     return None
 
 
@@ -419,6 +430,7 @@ def _traffic_reliability(
     score: Any,
     calibration: dict[str, Any],
     mean_confidence: Any = None,
+    health: dict[str, Any] | None = None,
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -438,6 +450,16 @@ def _traffic_reliability(
         age_minutes = max(0, int((current_time - observed_at.astimezone(timezone.utc)).total_seconds() // 60))
 
     has_score = isinstance(score, (int, float))
+    usable = health is None or observation_is_usable({"health": health})
+    if not usable:
+        return {
+            "level": "unavailable",
+            "reason": str((health or {}).get("analysis", {}).get("error") or "Capture or analysis failed"),
+            "is_live": False,
+            "is_calibrated": bool(calibration.get("is_calibrated")),
+            "age_minutes": age_minutes,
+            "max_live_age_minutes": _LIVE_MAX_AGE_MINUTES,
+        }
     is_live = has_score and age_minutes is not None and age_minutes <= _LIVE_MAX_AGE_MINUTES
     is_calibrated = bool(calibration.get("is_calibrated"))
     if not has_score:
@@ -722,12 +744,17 @@ def _overview_calibration_summary(
 
 def warm_dashboard_cache() -> None:
     """Load latest camera records before the API reports startup complete."""
-    store = JsonStore("data")
+    store = _default_store()
     _load_latest_analyses(store)
     _overview_calibration_summary(store, wait_for_refresh=False)
 
 
-_MANIFEST_PATH = Path(os.getenv("CAMERA_MANIFEST_PATH", "data/manifest.json"))
+_MANIFEST_PATH = Path(
+    os.getenv(
+        "CAMERA_MANIFEST_PATH",
+        os.getenv("PIPELINE_MANIFEST_FILE", "data/manifest.json"),
+    )
+)
 
 
 def _load_manifest_cameras(path: Path | None = None) -> list[dict[str, Any]]:
@@ -755,7 +782,7 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
     those entries simply carry "unknown" congestion until data exists.
     """
     if store is None:
-        store = JsonStore("data")
+        store = _default_store()
 
     coordinates = _load_camera_coordinates()
     calibrations = load_camera_calibrations()
@@ -781,6 +808,8 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             "latest_vehicle_count": None,
             "latest_flow_total": None,
             "latest_flow_split": None,
+            "latest_flow_count_per_burst": None,
+            "latest_flow_count_status": "unavailable",
             "latitude": None,
             "longitude": None,
             "density_rank": _DENSITY_PRIORITY["unknown"],
@@ -810,6 +839,8 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
                 "latest_vehicle_count": None,
                 "latest_flow_total": None,
                 "latest_flow_split": None,
+                "latest_flow_count_per_burst": None,
+                "latest_flow_count_status": "legacy_unknown",
                 "latitude": None,
                 "longitude": None,
                 "density_rank": _DENSITY_PRIORITY["unknown"],
@@ -841,6 +872,12 @@ def build_camera_summaries(store: Any = None) -> list[dict[str, Any]]:
             existing["latest_mean_confidence"] = details.get("mean_confidence")
             existing["latest_flow_total"] = total_flow.get("total")
             existing["latest_flow_split"] = total_flow if total_flow else None
+            existing["latest_flow_count_per_burst"] = details.get(
+                "flow_count_per_burst"
+            )
+            existing["latest_flow_count_status"] = details.get(
+                "flow_count_status", "legacy_unknown"
+            )
             existing["density_rank"] = _DENSITY_PRIORITY.get(str(density).lower(), _DENSITY_PRIORITY["unknown"])
             existing["map_position"] = _build_map_position(
                 camera_id,
@@ -915,7 +952,7 @@ def list_cameras(store: Any = None) -> list[dict[str, Any]]:
 def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
     """Return the latest analysis detail for a single camera."""
     if store is None:
-        store = JsonStore("data")
+        store = _default_store()
 
     record = _latest_analysis_for_camera(store, camera_id)
     manifest_camera = _manifest_camera_by_id(camera_id)
@@ -933,7 +970,7 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
             coordinates,
         )
         stream_urls = manifest_camera.get("stream_urls") or []
-        stream_url = next((url for url in stream_urls if str(url).lower().endswith(".m3u8")), None)
+        stream_url = select_hls_url(stream_urls)
         calibration = _calibration_status(camera_id, load_camera_calibrations())
         return {
             "camera_id": camera_id,
@@ -954,6 +991,9 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
             "visibility": None,
             "quality_flag": None,
             "flow_rate_vph": {},
+            "flow_count_per_burst": None,
+            "flow_count_status": "unavailable",
+            "flow_count_unavailable_reason": "no_successful_analysis",
             "latest_frame_url": None,
             "latest_debug_frame_url": None,
             "latest_image_url": None,
@@ -1008,6 +1048,11 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
         "visibility": details.get("visibility"),
         "quality_flag": details.get("quality_flag"),
         "flow_rate_vph": details.get("flow_rate_vph"),
+        "flow_count_per_burst": details.get("flow_count_per_burst"),
+        "flow_count_status": details.get("flow_count_status", "legacy_unknown"),
+        "flow_count_unavailable_reason": details.get(
+            "flow_count_unavailable_reason"
+        ),
         "latest_frame_url": latest_frame.get("image_url"),
         "latest_debug_frame_url": latest_frame.get("debug_image_url"),
         "latest_image_url": latest_frame.get("display_image_url"),
@@ -1019,7 +1064,9 @@ def get_camera(camera_id: str, store: Any = None) -> dict[str, Any]:
             details.get("congestion_score"),
             calibration,
             details.get("mean_confidence"),
+            record.get("health"),
         ),
+        "health": record.get("health"),
     }
 
 
@@ -1031,14 +1078,16 @@ def get_camera_history(
 ) -> list[dict[str, Any]]:
     """Return recent analysis summaries for a camera, oldest to newest."""
     if store is None:
-        store = JsonStore("data")
+        store = _default_store()
 
     camera_dir = Path(getattr(store, "root_dir", Path("data"))) / "analyses" / str(camera_id)
     analyses: list[dict[str, Any]] = []
     if camera_dir.is_dir():
         for path in camera_dir.glob("*.json"):
             try:
-                analyses.append(json.loads(path.read_text(encoding="utf-8")))
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(record, dict) and observation_is_usable(record):
+                    analyses.append(record)
             except (OSError, ValueError):
                 continue
     analyses.sort(key=lambda record: record.get("captured_at") or "")
@@ -1049,6 +1098,12 @@ def get_camera_history(
             "vehicle_count": (record.get("details") or {}).get("vehicle_count"),
             "congestion_score": (record.get("details") or {}).get("congestion_score"),
             "flow_rate_vph": (record.get("details") or {}).get("flow_rate_vph"),
+            "flow_count_per_burst": (record.get("details") or {}).get(
+                "flow_count_per_burst"
+            ),
+            "flow_count_status": (record.get("details") or {}).get(
+                "flow_count_status", "legacy_unknown"
+            ),
         }
         for record in analyses
     ]
@@ -1104,7 +1159,7 @@ def get_overview(store: Any = None) -> dict[str, Any]:
     """City-wide congestion overview for the dashboard header cards."""
     wait_for_calibration = store is not None
     if store is None:
-        store = JsonStore("data")
+        store = _default_store()
     summaries = build_camera_summaries(store=store)
     corridor_segments = _build_corridor_segments(summaries)
     calibration_summary = _overview_calibration_summary(

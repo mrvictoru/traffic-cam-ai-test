@@ -4,6 +4,7 @@ import yaml
 
 
 COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+DOCKERFILE = COMPOSE_FILE.with_name("Dockerfile")
 
 
 def _services() -> dict:
@@ -30,3 +31,11 @@ def test_live_capture_is_an_explicit_separate_profile() -> None:
     assert "${PIPELINE_FRAME_COUNT:-5}" in live_capture["command"]
     assert "ports" not in live_capture
     assert live_capture["volumes"] == dashboard["volumes"]
+
+
+def test_standalone_image_contains_runtime_configuration_and_tools() -> None:
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "COPY config/ ./config/" in dockerfile
+    assert "COPY tools/ ./tools/" in dockerfile
+    assert "COPY data/ ./data/" not in dockerfile

@@ -12,6 +12,7 @@ Leaflet is loaded from a CDN; no frontend build step required.
 from __future__ import annotations
 
 import json
+import os
 
 from trafficcam.api.routes import build_camera_summaries, get_overview
 from trafficcam.storage.json_store import JsonStore
@@ -29,7 +30,7 @@ def _payload(store: JsonStore | None) -> str:
     """Serialize initial cameras + overview payloads for embedding."""
     use_background_refresh = store is None
     if store is None:
-        store = JsonStore("data")
+        store = JsonStore(os.getenv("PIPELINE_DATA_DIR", "data"))
     summaries = build_camera_summaries(store=store)
     try:
         overview = get_overview() if use_background_refresh else get_overview(store=store)
@@ -495,12 +496,17 @@ async function openDetail(id) {
       ? `<div class="section"><h3>Latest frame</h3><img class="frame-preview" src="${detail.latest_image_url}"></div>`
       : `<div class="section"><h3>Latest frame</h3><p class="muted">${detail.captured_at ? 'No saved frame available.' : 'Waiting for the first capture and analysis cycle for this camera.'}</p></div>`;
     // Crossings are per-burst observations — hide the section when zero.
-    const split = detail.flow_rate_vph || {};
-    const tot = (split.in || 0) + (split.out || 0);
+    const split = detail.flow_count_per_burst || detail.flow_rate_vph || {};
+    const hasCardinalFlow = 'northbound' in split || 'southbound' in split;
+    const northbound = split.northbound ?? split.in ?? 0;
+    const southbound = split.southbound ?? split.out ?? 0;
+    const tot = northbound + southbound;
+    const firstDirection = hasCardinalFlow ? 'NB' : 'in';
+    const secondDirection = hasCardinalFlow ? 'SB' : 'out';
     const flowSection = tot
       ? `<div class="section"><h3>Crossings this burst</h3>
-           <div class="flowbar"><div class="nb" style="width:${Math.round((split.in||0)/tot*100)}%">in ${split.in||0}</div>
-           <div class="sb" style="width:${100 - Math.round((split.in||0)/tot*100)}%">out ${split.out||0}</div></div></div>`
+           <div class="flowbar"><div class="nb" style="width:${Math.round(northbound/tot*100)}%">${firstDirection} ${northbound}</div>
+           <div class="sb" style="width:${100 - Math.round(northbound/tot*100)}%">${secondDirection} ${southbound}</div></div></div>`
       : '';
     content.innerHTML = `
       <h2>${detail.name || 'Camera ' + detail.camera_id}</h2>

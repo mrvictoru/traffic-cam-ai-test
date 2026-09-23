@@ -53,6 +53,26 @@ This will:
 - follow reload/continue logic when the anti-bot page is present,
 - use `ffmpeg` to capture frame images into `frames/`.
 
+Capture results are validated before publication. A burst is analyzable only
+when FFmpeg exits successfully and exactly the requested number of JPEG frames
+decode with consistent dimensions. Failed or partial bursts are reported with
+an explicit status and do not replace the previous published frames. HLS URLs
+with query parameters are supported. The legacy object-based
+`FrameCapturer.capture` helper is unsupported and no longer writes placeholder
+bytes.
+
+Each pipeline cycle also records one operational attempt under
+`data/capture_attempts/<camera_id>/`. These health records are separate from
+traffic analyses, so failed capture or analysis attempts remain observable
+without being counted as valid zero-traffic samples. Successful analysis
+history and its rebuildable JSONL index are atomically persisted; incident
+processing runs after each completed cycle.
+
+Analysis records use schema version 2 and retain both `raw_congestion_score`
+and the compatible adjusted `congestion_score`. Only versioned raw scores from
+usable observations contribute to future temporal baselines; older records
+remain readable/displayable but are not treated as calibrated baseline samples.
+
 ### Run repeated capture cycles
 
 ```bash

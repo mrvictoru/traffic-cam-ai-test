@@ -106,6 +106,23 @@ class TestFreeflowCalibration:
         )
         assert freeflow_for_camera("49", path=config) == pytest.approx(12.5)
 
+    def test_ignores_calibration_for_another_detector_model(self, tmp_path) -> None:
+        config = tmp_path / "calibration.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "cameras": {
+                        "49": {
+                            "freeflow_px_per_frame": 12.5,
+                            "detector_model": "yolov8n.pt",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert freeflow_for_camera("49", path=config) is None
+
     def test_missing_file_returns_empty(self, tmp_path) -> None:
         assert freeflow_for_camera("49", path=tmp_path / "missing.json") is None
 

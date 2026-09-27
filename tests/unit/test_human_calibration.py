@@ -11,7 +11,8 @@ def test_offpeak_window_is_closed_in_the_evening() -> None:
     status = offpeak_window_status(now)
 
     assert status["in_offpeak_window"] is False
-    assert status["can_collect_freeflow_samples"] is False
+    assert status["can_collect_freeflow_samples"] is True
+    assert status["is_recommended_window"] is False
     assert status["offpeak_hours"] == "02:00-05:00"
     assert status["minutes_until_next_window"] == 186
     assert status["next_window_start"].startswith("2026-08-29T02:00:00")
@@ -23,6 +24,7 @@ def test_offpeak_window_is_open_at_three_am() -> None:
 
     assert status["in_offpeak_window"] is True
     assert status["can_collect_freeflow_samples"] is True
+    assert status["is_recommended_window"] is True
     assert status["minutes_until_next_window"] == 0
 
 
@@ -47,9 +49,9 @@ def test_human_calibration_marks_map_work_as_human_required() -> None:
     assert tasks["place-cameras"]["status"] == "blocked"
     assert tasks["place-cameras"]["remaining"] == 105
     assert tasks["collect-offpeak-motion"]["owner"] == "automated"
-    assert tasks["collect-offpeak-motion"]["status"] == "waiting"
+    assert tasks["collect-offpeak-motion"]["status"] == "ready"
     assert tasks["run-calibrate-freeflow"]["status"] == "waiting"
-    assert "must not be written as free-flow speeds" in tasks["collect-offpeak-motion"]["detail"]
+    assert "not a requirement" in tasks["collect-offpeak-motion"]["detail"]
 
 
 def test_human_calibration_is_ready_inside_the_collection_window() -> None:

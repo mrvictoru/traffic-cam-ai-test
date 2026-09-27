@@ -6,6 +6,7 @@ from .detector import ZeroShotDetector
 from .density_scorer import DensityScorer
 from .tracker import SimpleTracker, SupervisionTracker, build_tracker
 from .scene import SceneClassifier
+from .motion import MotionAssessment, classify_motion
 
 __all__ = [
 	"ZeroShotDetector",
@@ -14,4 +15,6 @@ __all__ = [
 	"SupervisionTracker",
 	"build_tracker",
 	"SceneClassifier",
+	"MotionAssessment",
+	"classify_motion",
 ]

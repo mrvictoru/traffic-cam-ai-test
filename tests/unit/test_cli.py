@@ -157,7 +157,16 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
                 "camera_id": "50",
                 # 18:00 UTC is 02:00 the following day in Asia/Macau.
                 "captured_at": "2026-08-19T18:00:00Z",
-                "details": {"median_speed_px_per_frame": 8.0},
+                "details": {
+                    "median_speed_px_per_frame": 8.0,
+                    "mean_confidence": 0.9,
+                    "active_tracks": 3,
+                    "detector_model": "yolo11s.pt",
+                    "motion_support": {
+                        "eligible_tracks": 3,
+                        "eligible_tracks_evaluated": True,
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -251,16 +260,41 @@ def test_audit_config_reports_missing_camera_config(monkeypatch, capsys, tmp_pat
 def test_calibrate_freeflow_command_runs_and_prints_result(monkeypatch, capsys, tmp_path: Path) -> None:
     recorded = {}
 
-    def _fake_calibrate(data_dir, config_path, min_history, dry_run, offpeak_start=2, offpeak_end=5):
+    def _fake_calibrate(
+        data_dir,
+        config_path,
+        min_history,
+        dry_run,
+        offpeak_start=2,
+        offpeak_end=5,
+        min_mean_confidence=0.25,
+        min_eligible_tracks=2,
+        detector_model="yolo11s.pt",
+    ):
         recorded["data_dir"] = data_dir
         recorded["config_path"] = config_path
         recorded["min_history"] = min_history
         recorded["dry_run"] = dry_run
         recorded["offpeak_start"] = offpeak_start
         recorded["offpeak_end"] = offpeak_end
-        return {"49": {"freeflow_px_per_frame": 10.5, "sample_count": 6, "offpeak_hours": "02-05"}}
+        recorded["min_mean_confidence"] = min_mean_confidence
+        recorded["min_eligible_tracks"] = min_eligible_tracks
+        recorded["detector_model"] = detector_model
+        return {
+            "sample_window_local": "01:00-04:00 Asia/Macau",
+            "detector_model": detector_model,
+            "min_history": 7,
+            "quality_thresholds": {
+                "min_mean_confidence": 0.3,
+                "min_eligible_tracks": 3,
+                "min_active_tracks": 3,
+                "detector_model": detector_model,
+            },
+            "cameras": {"49": {"freeflow_px_per_frame": 10.5, "sample_count": 6}},
+            "evidence": {"49": {"quality_qualified_records": 6}},
+        }
 
-    monkeypatch.setattr(cli, "calibrate", _fake_calibrate)
+    monkeypatch.setattr(cli, "calibrate_with_report", _fake_calibrate)
 
     result = cli.main(
         [
@@ -275,6 +309,12 @@ def test_calibrate_freeflow_command_runs_and_prints_result(monkeypatch, capsys, 
             "1",
             "--offpeak-end",
             "4",
+            "--min-mean-confidence",
+            "0.3",
+            "--min-eligible-tracks",
+            "3",
+            "--detector-model",
+            "yolo11s.pt",
             "--dry-run",
         ]
     )
@@ -286,13 +326,34 @@ def test_calibrate_freeflow_command_runs_and_prints_result(monkeypatch, capsys, 
     assert recorded["dry_run"] is True
     assert recorded["offpeak_start"] == 1
     assert recorded["offpeak_end"] == 4
+    assert recorded["min_mean_confidence"] == 0.3
+    assert recorded["min_eligible_tracks"] == 3
+    assert recorded["detector_model"] == "yolo11s.pt"
     assert json.loads(capsys.readouterr().out) == {
         "data_dir": str(tmp_path / "data"),
         "config": str(tmp_path / "camera_speed_calibration.json"),
         "dry_run": True,
+        "sample_window_local": "01:00-04:00 Asia/Macau",
+        "detector_model": "yolo11s.pt",
+        "min_history": 7,
+        "quality_thresholds": {
+            "min_mean_confidence": 0.3,
+            "min_eligible_tracks": 3,
+            "min_active_tracks": 3,
+            "detector_model": "yolo11s.pt",
+        },
         "camera_count": 1,
-        "cameras": {"49": {"freeflow_px_per_frame": 10.5, "sample_count": 6, "offpeak_hours": "02-05"}},
+        "cameras": {"49": {"freeflow_px_per_frame": 10.5, "sample_count": 6}},
+        "evidence": {"49": {"quality_qualified_records": 6}},
     }
+
+
+def test_calibrate_freeflow_keeps_legacy_track_threshold_alias() -> None:
+    args = cli.build_parser().parse_args(
+        ["calibrate-freeflow", "--min-active-tracks", "4"]
+    )
+
+    assert args.min_eligible_tracks == 4
 
 
 def test_serve_dispatches_to_uvicorn(monkeypatch) -> None:

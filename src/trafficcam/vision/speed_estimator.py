@@ -108,6 +108,12 @@ def _load_freeflow_calibration(path: str | Path | None = None) -> dict[str, floa
 
     parsed: dict[str, float] = {}
     for camera_id, entry in load_camera_calibrations(target).items():
+        calibrated_model = entry.get("detector_model")
+        if (
+            calibrated_model is not None
+            and calibrated_model != settings.vision_yolo_model_name
+        ):
+            continue
         value = entry.get("freeflow_px_per_frame")
         try:
             parsed[str(camera_id)] = float(value)

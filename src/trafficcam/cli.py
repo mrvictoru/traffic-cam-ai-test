@@ -8,7 +8,14 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from trafficcam.calibration import build_human_calibration, calibrate, summarize_calibration_coverage
+from trafficcam.calibration import (
+    DEFAULT_CALIBRATION_MIN_ELIGIBLE_TRACKS,
+    DEFAULT_CALIBRATION_MIN_HISTORY,
+    DEFAULT_CALIBRATION_MIN_MEAN_CONFIDENCE,
+    build_human_calibration,
+    calibrate_with_report,
+    summarize_calibration_coverage,
+)
 from trafficcam.config import settings
 from trafficcam.capture.frame_capturer import FrameCapturer
 from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
@@ -154,6 +161,9 @@ def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
         min_history=int(args.calibration_min_history),
         offpeak_start=int(args.calibration_offpeak_start),
         offpeak_end=int(args.calibration_offpeak_end),
+        min_mean_confidence=float(args.calibration_min_mean_confidence),
+        min_eligible_tracks=int(args.calibration_min_eligible_tracks),
+        detector_model=args.calibration_detector_model,
     )
 
     return {
@@ -189,6 +199,8 @@ def _build_config_audit(args: argparse.Namespace) -> dict[str, Any]:
             offpeak_start=int(args.calibration_offpeak_start),
             offpeak_end=int(args.calibration_offpeak_end),
             min_history=int(args.calibration_min_history),
+            min_mean_confidence=float(args.calibration_min_mean_confidence),
+            min_eligible_tracks=int(args.calibration_min_eligible_tracks),
         ),
         "config_files": {
             "coordinates": str(args.coordinates_file),
@@ -260,9 +272,41 @@ def build_parser() -> argparse.ArgumentParser:
     audit_config.add_argument("--coordinates-file", default="config/camera_coordinates.json")
     audit_config.add_argument("--thresholds-file", default=settings.camera_density_thresholds_path)
     audit_config.add_argument("--calibration-file", default=settings.camera_speed_calibration_path)
-    audit_config.add_argument("--calibration-min-history", type=int, default=5)
-    audit_config.add_argument("--calibration-offpeak-start", type=int, default=2)
-    audit_config.add_argument("--calibration-offpeak-end", type=int, default=5)
+    audit_config.add_argument(
+        "--calibration-min-history",
+        type=int,
+        default=DEFAULT_CALIBRATION_MIN_HISTORY,
+    )
+    audit_config.add_argument(
+        "--calibration-offpeak-start",
+        "--calibration-window-start",
+        dest="calibration_offpeak_start",
+        type=int,
+        default=2,
+    )
+    audit_config.add_argument(
+        "--calibration-offpeak-end",
+        "--calibration-window-end",
+        dest="calibration_offpeak_end",
+        type=int,
+        default=5,
+    )
+    audit_config.add_argument(
+        "--calibration-min-mean-confidence",
+        type=float,
+        default=DEFAULT_CALIBRATION_MIN_MEAN_CONFIDENCE,
+    )
+    audit_config.add_argument(
+        "--calibration-min-eligible-tracks",
+        "--calibration-min-active-tracks",
+        dest="calibration_min_eligible_tracks",
+        type=int,
+        default=DEFAULT_CALIBRATION_MIN_ELIGIBLE_TRACKS,
+    )
+    audit_config.add_argument(
+        "--calibration-detector-model",
+        default=settings.vision_yolo_model_name,
+    )
     audit_config.add_argument("--rois-file", default=settings.roi_config_path)
     audit_config.add_argument("--flow-lines-file", default=settings.flow_line_config_path)
     audit_config.add_argument("--corridors-file", default=settings.camera_corridors_path)
@@ -276,9 +320,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibrate_freeflow.add_argument("--data-dir", default="data")
     calibrate_freeflow.add_argument("--config", default=settings.camera_speed_calibration_path)
-    calibrate_freeflow.add_argument("--min-history", type=int, default=5)
-    calibrate_freeflow.add_argument("--offpeak-start", type=int, default=2)
-    calibrate_freeflow.add_argument("--offpeak-end", type=int, default=5)
+    calibrate_freeflow.add_argument(
+        "--min-history",
+        type=int,
+        default=DEFAULT_CALIBRATION_MIN_HISTORY,
+    )
+    calibrate_freeflow.add_argument(
+        "--offpeak-start",
+        "--window-start",
+        dest="offpeak_start",
+        type=int,
+        default=2,
+        help="Start hour in Asia/Macau; defaults to the 02:00-05:00 quiet-traffic proxy",
+    )
+    calibrate_freeflow.add_argument(
+        "--offpeak-end",
+        "--window-end",
+        dest="offpeak_end",
+        type=int,
+        default=5,
+        help="End hour in Asia/Macau (exclusive)",
+    )
+    calibrate_freeflow.add_argument(
+        "--min-mean-confidence",
+        type=float,
+        default=DEFAULT_CALIBRATION_MIN_MEAN_CONFIDENCE,
+        help="Minimum confidence. Uses occupied-frame confidence when per-frame results exist.",
+    )
+    calibrate_freeflow.add_argument(
+        "--min-eligible-tracks",
+        "--min-active-tracks",
+        dest="min_eligible_tracks",
+        type=int,
+        default=DEFAULT_CALIBRATION_MIN_ELIGIBLE_TRACKS,
+    )
+    calibrate_freeflow.add_argument(
+        "--detector-model",
+        default=settings.vision_yolo_model_name,
+        help="Only calibrate records produced by this exact detector model identifier",
+    )
     calibrate_freeflow.add_argument("--dry-run", action="store_true")
     calibrate_freeflow.add_argument("--pretty", action="store_true")
 
@@ -344,20 +424,23 @@ def _dispatch_audit_config(args: argparse.Namespace) -> int:
 
 
 def _dispatch_calibrate_freeflow(args: argparse.Namespace) -> int:
-    result = calibrate(
+    result = calibrate_with_report(
         Path(args.data_dir),
         Path(args.config),
         min_history=args.min_history,
         dry_run=args.dry_run,
         offpeak_start=args.offpeak_start,
         offpeak_end=args.offpeak_end,
+        min_mean_confidence=args.min_mean_confidence,
+        min_eligible_tracks=args.min_eligible_tracks,
+        detector_model=args.detector_model,
     )
     payload = {
         "data_dir": str(args.data_dir),
         "config": str(args.config),
         "dry_run": bool(args.dry_run),
-        "camera_count": len(result),
-        "cameras": result,
+        **result,
+        "camera_count": len(result["cameras"]),
     }
     _print_json(payload, pretty=args.pretty)
     return 0

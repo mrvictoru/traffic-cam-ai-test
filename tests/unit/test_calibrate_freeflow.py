@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from trafficcam.calibration import calibrate_with_report, summarize_calibration_coverage
+
 _TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 _spec = importlib.util.spec_from_file_location("calibrate_freeflow", _TOOLS_DIR / "calibrate_freeflow.py")
 calibrate_freeflow = importlib.util.module_from_spec(_spec)
@@ -21,10 +23,29 @@ def _write_record(
     camera_id: str,
     captured_at: str,
     speed: float | None,
+    *,
+    confidence: float = 0.9,
+    active_tracks: int = 3,
+    eligible_tracks: int = 3,
+    support_evaluated: bool = True,
+    detector_model: str = "yolo11s.pt",
+    per_frame: list[dict] | None = None,
 ) -> None:
     cam_dir = analyses_root / camera_id
     cam_dir.mkdir(parents=True, exist_ok=True)
-    details = {} if speed is None else {"median_speed_px_per_frame": speed}
+    details = {
+        "mean_confidence": confidence,
+        "active_tracks": active_tracks,
+        "detector_model": detector_model,
+        "motion_support": {
+            "eligible_tracks": eligible_tracks,
+            "eligible_tracks_evaluated": support_evaluated,
+        },
+    }
+    if per_frame is not None:
+        details["per_frame"] = per_frame
+    if speed is not None:
+        details["median_speed_px_per_frame"] = speed
     (cam_dir / f"{captured_at.replace(':', '')}.json").write_text(
         json.dumps({"camera_id": camera_id, "captured_at": captured_at, "details": details}),
         encoding="utf-8",
@@ -56,9 +77,12 @@ class TestCalibrate:
         assert entry["freeflow_px_per_frame"] == pytest.approx(11.0, abs=0.8)
         # The 30 px/frame jitter outlier must be trimmed from the sample set.
         assert entry["sample_count"] == 5
+        assert entry["sampling_window_local"] == "02:00-05:00 Asia/Macau"
 
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         assert str(payload["cameras"]["49"]["freeflow_px_per_frame"]) == str(entry["freeflow_px_per_frame"])
+        assert payload["cameras"]["49"]["sampling_window_local"] == "02:00-05:00 Asia/Macau"
+        assert "offpeak_hours" not in payload["cameras"]["49"]
 
     def test_daytime_samples_excluded(self, history_dir: Path, tmp_path: Path) -> None:
         config_path = tmp_path / "camera_speed_calibration.json"
@@ -112,6 +136,7 @@ class TestCalibrate:
         )
         assert "61" in result
         assert result["61"]["freeflow_px_per_frame"] < 20.0
+        assert result["61"]["sampling_window_local"] == "22:00-06:00 Asia/Macau"
 
     def test_utc_timestamps_use_macau_local_offpeak_hours(self, tmp_path: Path) -> None:
         data_dir = tmp_path / "data"
@@ -141,3 +166,196 @@ class TestCalibrate:
 
         assert result["88"]["sample_count"] == 5
         assert result["88"]["freeflow_px_per_frame"] < 20.0
+
+    def test_quality_filters_and_rejection_counts(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        analyses = data_dir / "analyses"
+        for idx, speed in enumerate((10.0, 11.0, 12.0)):
+            _write_record(analyses, "72", f"2026-08-19T19:0{idx}:00Z", speed)
+        _write_record(
+            analyses,
+            "72",
+            "2026-08-19T19:03:00Z",
+            100.0,
+            confidence=0.1,
+        )
+        _write_record(
+            analyses,
+            "72",
+            "2026-08-19T19:04:00Z",
+            100.0,
+            eligible_tracks=1,
+        )
+
+        result = calibrate_with_report(
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=3,
+            dry_run=True,
+        )
+
+        assert result["cameras"]["72"]["sample_count"] == 3
+        assert result["evidence"]["72"]["quality_qualified_records"] == 3
+        assert result["evidence"]["72"]["rejected"]["low_confidence"] == 1
+        assert result["evidence"]["72"]["rejected"]["insufficient_track_support"] == 1
+
+    def test_requires_evaluated_eligible_track_support(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        analyses = data_dir / "analyses"
+        _write_record(
+            analyses,
+            "72",
+            "2026-08-19T19:00:00Z",
+            10.0,
+            support_evaluated=False,
+        )
+        old_record = analyses / "72" / "2026-08-19T19:01:00Z.json"
+        old_record.write_text(
+            json.dumps(
+                {
+                    "camera_id": "72",
+                    "captured_at": "2026-08-19T19:01:00Z",
+                    "details": {
+                        "median_speed_px_per_frame": 10.0,
+                        "mean_confidence": 0.9,
+                        "active_tracks": 20,
+                        "detector_model": "yolo11s.pt",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = calibrate_with_report(
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=1,
+            dry_run=True,
+        )
+
+        assert result["cameras"] == {}
+        assert result["evidence"]["72"]["rejected"]["missing_track_support"] == 2
+
+    def test_rejects_records_from_a_different_detector_model(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        _write_record(
+            data_dir / "analyses",
+            "72",
+            "2026-08-19T19:00:00Z",
+            10.0,
+            detector_model="yolov8n.pt",
+        )
+
+        result = calibrate_with_report(
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=1,
+            dry_run=True,
+            detector_model="yolo11s.pt",
+        )
+
+        assert result["cameras"] == {}
+        assert result["evidence"]["72"]["rejected"]["detector_model_mismatch"] == 1
+
+    def test_reports_chronological_half_stability(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        for idx, speed in enumerate((10.0, 10.2, 10.4, 10.6, 10.8, 20.0, 20.2, 20.4, 20.6, 20.8)):
+            _write_record(
+                data_dir / "analyses",
+                "73",
+                f"2026-08-19T19:{idx:02d}:00Z",
+                speed,
+            )
+
+        result = calibrate_with_report(
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=5,
+            dry_run=True,
+        )
+        halves = result["evidence"]["73"]["chronological_halves"]
+
+        assert halves["first"]["sample_count"] == 5
+        assert halves["second"]["sample_count"] == 5
+        assert halves["p95_ratio"] == pytest.approx(2.0, abs=0.1)
+        assert halves["review_status"] == "review_required"
+
+    def test_low_quality_history_is_not_ready(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        _write_record(
+            data_dir / "analyses",
+            "74",
+            "2026-08-19T19:00:00Z",
+            10.0,
+            confidence=0.1,
+            active_tracks=0,
+        )
+
+        coverage = summarize_calibration_coverage(
+            ["74"],
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=1,
+        )
+
+        assert coverage["status_camera_ids"]["low_quality_history"] == ["74"]
+
+    def test_occupied_frames_are_not_diluted_by_empty_frames(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        per_frame = [{"vehicle_count": 0, "confidence": 0.0} for _ in range(20)]
+        per_frame.extend(
+            {"vehicle_count": 2, "confidence": 0.8} for _ in range(5)
+        )
+        for idx in range(5):
+            _write_record(
+                data_dir / "analyses",
+                "59",
+                f"2026-08-19T19:0{idx}:00Z",
+                8.0 + (idx * 0.1),
+                confidence=0.16,
+                per_frame=per_frame,
+            )
+
+        result = calibrate_with_report(
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=5,
+            dry_run=True,
+        )
+
+        assert result["cameras"]["59"]["sample_count"] == 5
+        assert result["evidence"]["59"]["rejected"]["low_confidence"] == 0
+        assert result["evidence"]["59"]["confidence_basis_counts"] == {"occupied_frames": 5}
+        assert result["evidence"]["59"]["mean_sample_confidence"] == pytest.approx(0.8, abs=0.01)
+
+    def test_stopped_dominated_window_is_not_persisted(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        speeds = [0.1, 0.15, 0.2, 0.2, 0.25, 0.3, 0.35, 6.0, 6.5, 7.0]
+        for idx, speed in enumerate(speeds):
+            _write_record(
+                data_dir / "analyses",
+                "62",
+                f"2026-08-19T19:{idx:02d}:00Z",
+                speed,
+            )
+
+        result = calibrate_with_report(
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=5,
+            dry_run=False,
+        )
+
+        assert "62" not in result["cameras"]
+        evidence = result["evidence"]["62"]
+        assert evidence["persistence_block"] == "stopped_dominated"
+        assert evidence["raw_p95_px_per_frame"] > 5.0
+        assert not (tmp_path / "camera_speed_calibration.json").exists()
+
+        coverage = summarize_calibration_coverage(
+            ["62"],
+            data_dir,
+            tmp_path / "camera_speed_calibration.json",
+            min_history=5,
+        )
+        assert coverage["status_camera_ids"]["stopped_dominated"] == ["62"]

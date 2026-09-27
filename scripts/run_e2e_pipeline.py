@@ -15,14 +15,6 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-try:
-    import supervision as sv
-
-    _SUPERVISION_AVAILABLE = True
-except Exception:  # pragma: no cover
-    sv = None
-    _SUPERVISION_AVAILABLE = False
-
 from trafficcam.analysis.trends import TrendAnalyzer, compute_directional_flow_split
 from trafficcam.health import (
     CURRENT_ANALYSIS_SCHEMA_VERSION,
@@ -47,6 +39,7 @@ from trafficcam.vision.speed_estimator import (
     moving_vehicle_count,
     speed_score_from_ratio,
 )
+from trafficcam.vision.motion import classify_motion
 from trafficcam.vision.roi import (
     compute_coverage_ratio,
     filter_detections_to_roi,
@@ -62,24 +55,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 _DENSITY_LEVELS = ["light", "moderate", "heavy", "blocked"]
 
 
-def _line_counter_snapshot(line_counter: Any | None) -> dict[str, int]:
-    if line_counter is None:
-        return {"in": 0, "out": 0, "total": 0}
-    in_count = int(getattr(line_counter, "in_count", 0))
-    out_count = int(getattr(line_counter, "out_count", 0))
-    return {"in": in_count, "out": out_count, "total": in_count + out_count}
-
-
-def _build_line_counter(
-    flow_line_pixels: tuple[tuple[float, float], tuple[float, float]] | None,
-) -> Any | None:
-    if not (_SUPERVISION_AVAILABLE and flow_line_pixels):
-        return None
-    start, end = flow_line_pixels
-    return sv.LineZone(
-        start=sv.Point(x=start[0], y=start[1]),
-        end=sv.Point(x=end[0], y=end[1]),
-    )
+def _line_crossings_from_split(flow_split: FlowSplit) -> dict[str, int]:
+    # Preserve the legacy in/out keys while keeping all count fields aligned.
+    return {
+        "in": flow_split.northbound,
+        "out": flow_split.southbound,
+        "total": flow_split.total,
+    }
 
 
 def _write_debug_frame(
@@ -204,6 +186,20 @@ def _analyze_burst(
     """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
     detector = detector if detector is not None else ZeroShotDetector()
     scene_classifier = scene_classifier if scene_classifier is not None else SceneClassifier()
+    detector_backend = getattr(detector, "backend", None)
+    if not isinstance(detector_backend, str):
+        detector_backend = getattr(settings, "vision_backend", "yolo")
+    detector_model_name = getattr(detector, "model_name", None)
+    if not isinstance(detector_model_name, str):
+        detector_model_name = (
+            getattr(settings, "vision_yolo_model_name", "yolo11s.pt")
+            if detector_backend == "yolo"
+            else getattr(
+                settings,
+                "vision_model_name",
+                "google/owlv2-base-patch16-ensemble",
+            )
+        )
     tracker = build_tracker(frame_rate=float(capture_result.get("sample_fps") or 1.0))
 
     per_frame_results: list[dict[str, Any]] = []
@@ -212,7 +208,7 @@ def _analyze_burst(
     frame_width = 0
     frame_height = 0
     flow_line_pixels: tuple[tuple[float, float], tuple[float, float]] | None = None
-    flow_counter: Any | None = None
+    flow_split = FlowSplit()
     debug_output_dir = None
     if settings.supervision_debug_frames_enabled and frame_paths:
         debug_output_dir = Path(frame_paths[0]).parent / settings.supervision_debug_dirname
@@ -226,7 +222,6 @@ def _analyze_burst(
             frame_width, frame_height = width, height
             if flow_line_pixels is None and flow_line:
                 flow_line_pixels = line_to_pixels(flow_line, width, height)
-                flow_counter = _build_line_counter(flow_line_pixels)
         scorer = DensityScorer(camera_id=camera_id)
         if roi_polygon:
             filtered_detections = filter_detections_to_roi(
@@ -263,16 +258,12 @@ def _analyze_burst(
             mean_confidence=detection.get("confidence", 0.0),
         )
         tracks = tracker.update(detection.get("detections", []))
-        tracker_detections = getattr(tracker, "latest_detections", None)
-        if flow_counter is not None and tracker_detections is not None:
-            try:
-                flow_counter.trigger(tracker_detections)
-            except (ValueError, TypeError) as exc:
-                # Incompatible detection format from a fallback tracker —
-                # disable further counting rather than aborting the analysis.
-                LOGGER.warning("Line counter disabled after error: %s", exc)
-                flow_counter = None
-        line_crossings = _line_counter_snapshot(flow_counter)
+        if flow_line_pixels is not None:
+            flow_split = compute_directional_flow_split(
+                tracker.track_histories,
+                flow_line_pixels,
+            )
+        line_crossings = _line_crossings_from_split(flow_split)
         LOGGER.info(
             "Frame %d: %d detections (density=%s, confidence=%.3f, tracks=%d)",
             idx,
@@ -345,6 +336,18 @@ def _analyze_burst(
     # motion data exists, the score falls back to occupancy-only blending.
     median_speed = median_track_speed(tracker.track_histories)
     freeflow = freeflow_for_camera(camera_id)
+    motion = classify_motion(
+        tracker.track_histories,
+        freeflow_px_per_frame=freeflow,
+        frame_count=len(frame_paths),
+        sample_fps=float(capture_result.get("sample_fps") or 0.0),
+        min_track_points=getattr(settings, "motion_min_track_points", 3),
+        min_tracks=getattr(settings, "motion_min_tracks", 2),
+        min_observed_seconds=getattr(settings, "motion_min_observed_seconds", 1.5),
+        slow_ratio=getattr(settings, "motion_slow_ratio", 0.15),
+        freeflow_ratio=getattr(settings, "motion_freeflow_ratio", 0.60),
+        stopped_fraction=getattr(settings, "motion_stopped_fraction", 0.60),
+    )
     speed_ratio: float | None = None
     speed_component: float | None = None
     if median_speed is not None and freeflow:
@@ -413,14 +416,8 @@ def _analyze_burst(
             scene_info,
             mean_confidence,
         )
-    flow_split = FlowSplit()
     flow_count_available = bool(flow_line and frame_width > 0 and frame_height > 0)
-    if flow_count_available:
-        flow_split = compute_directional_flow_split(
-            tracker.track_histories,
-            line_to_pixels(flow_line, frame_width, frame_height),
-        )
-    line_crossings = _line_counter_snapshot(flow_counter)
+    line_crossings = _line_crossings_from_split(flow_split)
 
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -448,12 +445,25 @@ def _analyze_burst(
             "lighting": scene_info.get("lighting", "unknown"),
             "visibility": scene_info.get("visibility", "unknown"),
             "quality_flag": scene_info.get("quality_flag", "unknown"),
+            "detector_backend": detector_backend,
+            "detector_model": detector_model_name,
             "raw_density": raw_density if raw_density != "unknown" else dominant_density,
             "median_speed_px_per_frame": round(median_speed, 3) if median_speed is not None else None,
             "freeflow_px_per_frame": freeflow,
             "speed_ratio": speed_ratio,
             "speed_component": speed_component,
             "moving_vehicle_count": moving_vehicle_count(tracker.track_histories),
+            "motion_state": motion.state,
+            "motion_version": "shadow-v1",
+            "motion_reason": motion.reason,
+            "motion_support": {
+                "eligible_tracks": motion.eligible_tracks,
+                "eligible_tracks_evaluated": motion.eligible_tracks_evaluated,
+                "total_tracks": motion.total_tracks,
+                "observed_seconds": motion.observed_seconds,
+                "median_ratio": motion.median_ratio,
+                "stationary_fraction": motion.stationary_fraction,
+            },
             "baseline": baseline_meta,
             # NOTE: despite the legacy name, these are line crossings observed
             # during this short burst — not vehicles per hour.

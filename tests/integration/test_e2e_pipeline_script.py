@@ -16,26 +16,6 @@ from trafficcam.storage.json_store import JsonStore
 from trafficcam.vision.tracker import SimpleTracker
 
 
-class _FakeSupervisionTracker:
-    def __init__(self) -> None:
-        self._tracker = SimpleTracker(iou_threshold=0.3, max_age=2)
-        self.backend_name = "supervision"
-        self.latest_detections = object()
-
-    def update(self, detections):
-        tracks = self._tracker.update(detections)
-        self.latest_detections = object()
-        return tracks
-
-    @property
-    def active_count(self):
-        return self._tracker.active_count
-
-    @property
-    def track_histories(self):
-        return self._tracker.track_histories
-
-
 def _mock_detector():
     """Return a mock ZeroShotDetector that returns deterministic results."""
     mock = MagicMock()
@@ -189,6 +169,9 @@ def test_roi_filtered_detections_recompute_count_label(tmp_path: Path) -> None:
     assert result["details"]["per_frame"][0]["density"] == "light"
     assert result["details"]["raw_density"] == "light"
     assert result["details"]["raw_congestion_score"] is not None
+    assert result["details"]["detector_backend"] == "yolo"
+    assert result["details"]["detector_model"] == "yolo11s.pt"
+    assert result["details"]["motion_support"]["eligible_tracks_evaluated"] is True
 
 
 def test_run_pipeline_persists_analysis_and_incidents(tmp_path: Path) -> None:
@@ -638,117 +621,17 @@ def test_run_pipeline_persists_directional_flow_split(tmp_path: Path) -> None:
         "southbound": 0,
         "total": 1,
     }
+    assert saved_record["details"]["line_crossings"] == {
+        "in": 1,
+        "out": 0,
+        "total": 1,
+    }
+    assert saved_record["details"]["per_frame"][-1]["line_crossings"] == {
+        "in": 1,
+        "out": 0,
+        "total": 1,
+    }
     assert saved_record["details"]["flow_count_status"] == "observed"
-
-
-def test_run_pipeline_persists_line_crossings_from_supervision_counter(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "source_url": "https://example.test/index",
-                "camera_count": 1,
-                "cameras": [
-                    {
-                        "cam_id": "1001",
-                        "name": "Flow Camera",
-                        "detail_url": "https://example.test/cam/1001",
-                        "stream_urls": ["https://example.test/stream.m3u8"],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    flow_lines_path = tmp_path / "camera_flow_lines.json"
-    flow_lines_path.write_text(
-        json.dumps({"1001": {"start": [0.0, 0.5], "end": [1.0, 0.5]}}),
-        encoding="utf-8",
-    )
-
-    fixture_frames = _create_synthetic_frames(tmp_path)
-    detector = MagicMock()
-    detector.analyze.side_effect = [
-        {
-            "image_path": fixture_frames[idx],
-            "label": "light",
-            "confidence": 0.9,
-            "detections": [
-                {
-                    "label": "car",
-                    "confidence": 0.9,
-                    "box": {"xmin": 20 + idx, "ymin": 80 - idx * 5, "xmax": 60 + idx, "ymax": 140 - idx * 5},
-                }
-            ],
-            "vehicle_count": 1,
-        }
-        for idx in range(3)
-    ]
-
-    def mock_ffmpeg(*args, **kwargs):
-        import shutil
-        import subprocess
-
-        camera_output_dir = Path(args[0][-1]).parent
-        camera_output_dir.mkdir(parents=True, exist_ok=True)
-        for i, src in enumerate(fixture_frames):
-            dst = camera_output_dir / f"frame_{i + 1:03d}.jpg"
-            shutil.copy(src, dst)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-    class FakePoint:
-        def __init__(self, x, y):
-            self.x = x
-            self.y = y
-
-    class FakeLineZone:
-        def __init__(self, start, end):
-            self.start = start
-            self.end = end
-            self.in_count = 0
-            self.out_count = 0
-            self.calls = 0
-
-        def trigger(self, detections):
-            self.calls += 1
-            if self.calls == 2:
-                self.in_count += 1
-
-    runtime_settings = SimpleNamespace(
-        roi_config_path=str(tmp_path / "missing_rois.json"),
-        roi_filter_enabled=False,
-        flow_line_config_path=str(flow_lines_path),
-        capture_burst_fps=1.0,
-        capture_warmup_seconds=0.0,
-        night_density_downgrade_steps=1,
-        night_blocked_min_confidence=0.5,
-        night_heavy_min_confidence=0.4,
-        supervision_debug_frames_enabled=False,
-        supervision_debug_dirname="debug",
-    )
-
-    with (
-        patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=detector),
-        patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()),
-        patch("scripts.run_e2e_pipeline.build_tracker", return_value=_FakeSupervisionTracker()),
-        patch("scripts.run_e2e_pipeline.settings", runtime_settings),
-        patch("scripts.run_e2e_pipeline._SUPERVISION_AVAILABLE", True),
-        patch("scripts.run_e2e_pipeline.sv", SimpleNamespace(Point=FakePoint, LineZone=FakeLineZone)),
-    ):
-        result = run_pipeline(
-            manifest_file=manifest_path,
-            output_dir=tmp_path / "output" / "e2e",
-            data_dir=tmp_path / "data",
-            frame_count=3,
-            limit=1,
-        )
-
-    assert result["analysis_count"] == 1
-    analysis_files = sorted((tmp_path / "data" / "analyses" / "1001").glob("*.json"))
-    saved_record = json.loads(analysis_files[-1].read_text(encoding="utf-8"))
-    assert saved_record["details"]["line_crossings"] == {"in": 1, "out": 0, "total": 1}
-    assert saved_record["details"]["tracking_backend"] == "supervision"
 
 
 def test_run_pipeline_exports_debug_frames_when_enabled(tmp_path: Path) -> None:

@@ -43,3 +43,12 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Local command output and calibration probes
+/.buildlog.txt
+/.uvcheck.txt
+/calib_out.txt
+/final_out.txt
+/latest50.json
+/mounted_final.txt
+/pytest_out*.txt
+/data*motion-calibration-yolo11s-20260926-expansion-10/

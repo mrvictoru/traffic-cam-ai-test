@@ -444,7 +444,7 @@ This keeps the work incremental and reduces the risk of breaking the existing li
 
 ## 9. Current project checklist
 
-Status as of 2026-08-28:
+Status as of 2026-09-27:
 
 - [x] camera map editing is available in the dashboard and manual placements persist to `config/camera_coordinates.json`
 - [x] traffic scoring now blends occupancy and motion-derived speed estimates instead of relying on a single occupancy proxy
@@ -459,17 +459,17 @@ Status as of 2026-08-28:
 - [x] rebuild the service with CPU-only Torch wheels and verify CUDA is not installed or selected
 - [x] validate live speed capture on camera 51; sparse ByteTrack bursts produced no identities, while the simple tracker at 5 FPS produced a `9.53 px/frame` motion sample
 - [x] set the sparse-burst defaults to the simple tracker and 5 FPS while keeping Supervision available as an explicit override
-- [x] apply the 02:00-05:00 calibration window in `Asia/Macau` local time instead of comparing UTC `Z` timestamps directly
+- [x] interpret the configurable calibration sample window in `Asia/Macau` local time instead of comparing UTC `Z` timestamps directly
 - [x] add direct Leaflet-page render coverage for corridor and calibration payloads
 - [x] commit and push the validated checkpoint as `980371c` on `copilot/build-web-ui-for-map-visualization`
 - [x] inspect the live dashboard against `/api/overview` and `/api/cameras`: 111 cameras, 3 green corridors, and matching summary cards/markers
 - [x] remove the hardcoded `PIPELINE_AUTOSTART=1` runtime bottleneck, make the default Compose service API-only, and expose live capture through an explicit `capture` profile
 - [x] add explicit traffic reliability metadata and live-coverage aggregates so stale, uncalibrated, and missing observations are not presented as routing-grade live traffic
 - [x] make the dashboard suppress stale congestion colours and scores, grey out historical corridors, and explain live coverage/calibration limitations in a prominent status banner
-- [x] surface an explicit human-vs-automated calibration checklist on `/api/overview` and the dashboard so placement, ROI, corridor, and 02:00-05:00 collection work are not mistaken for finished live traffic
+- [x] surface an explicit human-vs-automated calibration checklist on `/api/overview` and the dashboard so placement, ROI, corridor, and free-flow sample quality work are not mistaken for finished live traffic
 - [x] manually review the saved 2026-08-28 five-frame bursts and add 25 roadway ROIs plus 21 unambiguous single-road flow lines; record five unusable views and four complex intersections as deliberately deferred in `config/camera_geometry_review.json`
 - [x] cross-check the reviewed geometry against 24 successfully captured daylight frames and add exact named-place coordinates for cameras 60 and 62; reject ambiguous road-only geocoding matches
-- [ ] populate live calibration values from additional sustained motion history once more real-world data is collected, including a 02:00-05:00 Asia/Macau capture window; evening captures may only refresh occupancy
+- [ ] populate live calibration values only after quality-screened, visually reviewed samples are stable across independent collection periods; 02:00-05:00 Asia/Macau is a quiet-traffic proxy, not a hard time requirement
 - [x] replace heuristic corridor grouping with an explicit config-backed camera corridor model in `config/camera_corridors.json`
 - [x] populate the first conservative corridor groupings from named DSAT cameras and manually verified coordinates (58-59, 51-52, and 49-50)
 - [x] catalog four additional named-road candidates (Guia Tunnel, Sai Van Bridge, Qingmao Port, and Avenida do Ouvidor Arriaga) as disabled until their camera positions and road order are verified
@@ -531,6 +531,25 @@ having no history. The dashboard's `Need history` card currently shows 0 because
 it only counts `insufficient_history`; the detailed calibration payload is the
 authoritative breakdown.
 
+### 2026-09-26 motion-calibration capture
+
+Thirty-four 30-frame bursts were collected for camera 71 and fifteen for
+cameras 49, 51, 58, and 75 using YOLO11s, the simple tracker, and 5 FPS. In a
+reviewed 12:00-16:00 Asia/Macau dry-run, camera 71 had 23 retained samples
+(p95 8.413 px/sample-frame; chronological-half p95 ratio 1.056). Frames showed
+vehicles moving through the scene. That single-camera relative-motion baseline
+was persisted as an initial pilot. Camera 49's half-period ratio was 2.038;
+cameras 51, 58, and 75 had too few acceptable records or strongly divergent
+halves, so no values were promoted for them. These values are not
+physical-speed ground truth. The active YOLO model default is now YOLO11s, and
+calibration records and stored baselines are model-tagged to prevent mixing
+different detector versions.
+
+The calibration workflow now needs confidence/track-quality screening,
+transparent rejected-sample and split-period diagnostics, and truthful local
+sampling-window metadata. The 02:00-05:00 period is a quiet-traffic proxy, not
+a mandatory capture time. The baseline remains pixels per sampled frame.
+
 The normal Compose service is now API-only with `PIPELINE_AUTOSTART=0`. Live
 capture runs in a separate `live-capture` service through the explicit
 `capture` profile (`docker compose --profile capture up`), so model inference
@@ -546,8 +565,8 @@ Current API output correctly reports zero live cameras for the persisted
 layer. Fresh but uncalibrated observations are labelled provisional; only
 fresh, calibrated observations with adequate detector confidence are labelled
 reliable. This improves honesty and readability, but routing-grade accuracy
-still depends on collecting fresh 02:00-05:00 motion history and completing
-per-camera calibration.
+still depends on quality-screened, visually reviewed free-flow motion history
+and completing per-camera calibration.
 
 Human work that cannot be automated:
 
@@ -558,12 +577,104 @@ Human work that cannot be automated:
 - verify and enable the four disabled named corridors after checking camera
   order and geometry.
 
-Automated work that is time-gated:
+Automated work that requires suitable footage:
 
-1. use the rebuilt CPU-only Docker image and current simple-tracker/5-FPS defaults;
-2. run scheduled capture cycles across off-peak hours (02:00–05:00 Macau local time, equivalent to 18:00–21:00 UTC on the previous date) so each camera accumulates at least `--min-history` (default 5) usable motion samples. Evening/daytime cycles can refresh live occupancy only;
-3. run `python -m trafficcam.cli calibrate-freeflow --data-dir data --dry-run` to preview which cameras are ready, then drop `--dry-run` to persist values into `config/camera_speed_calibration.json`;
-4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` climbs and the dashboard's `Need you` / calibration checklist reflect it.
+1. use the same detector, tracker, and capture FPS that the target pipeline will use;
+2. collect repeated bursts of at least 30 frames per camera while vehicles are visibly moving freely. 02:00–05:00 Macau local time is a quiet-traffic proxy; other manually reviewed windows are supported;
+3. run `python -m trafficcam.cli calibrate-freeflow --data-dir data --dry-run` to inspect accepted/rejected evidence and chronological-half p95 stability before persisting values into `config/camera_speed_calibration.json`;
+4. run `python -m trafficcam.cli audit-config` to confirm `speed_calibration.configured_count` and the dashboard calibration checklist reflect quality-qualified history.
+
+The current calibration defaults screen for at least 10 retained bursts,
+mean confidence >= 0.25, and at least 2 evaluated, speed-eligible track
+histories. Legacy records without an explicit eligibility evaluation are
+rejected rather than treating all active tracks as usable motion evidence.
+These operational filters are provisional rather than accuracy guarantees.
+The calibration report exposes chronological-half p95 values; no validated cross-window
+stability tolerance has been established, so an operator must review the
+report and footage before persistence. Baselines remain relative pixels per
+sampled frame, not physical speeds.
+
+### 2026-09-26 evening calibration expansion
+
+An additional 20 bursts each were captured for cameras 49, 51, 58, 71, and 75
+in the 16:00-18:00 Asia/Macau window, for 60 total bursts per camera. A dry-run
+produced candidates for cameras 49 (31 retained; split p95 ratio 1.213), 51
+(22; 1.130), 71 (24; 2.240), and 75 (42; 1.051); camera 58 had no candidate.
+These remain review-only evidence, not approved calibration values. Camera 71's
+late-window estimate (6.038 px/sample-frame) does not validate its existing
+8.413 pilot, and no values from this capture were persisted.
+
+A separate first-pass pilot collected eight 30-frame bursts for cameras 50,
+52, 59, 60, 61, 62, 63, 64, 65, and 66 using YOLO11s, the simple tracker, and
+5 FPS. The initial dry-run did not meet the 10-retained-sample minimum for any
+camera. Camera 62 had the strongest evidence, so 25 more bursts were collected
+for that camera. Its 18:00-19:00 dry-run had 30 quality-qualified and 27
+retained samples, with a 2.094 px/sample-frame candidate and a split p95 ratio
+of 1.180 (15/11 samples); the report still required review.
+
+Camera 59 was also reviewed as a simpler-road pilot. The former ROI spanned
+almost the full frame, and the former flow line appeared roughly aligned with
+the road. On 2026-09-26 these were revised in `config/camera_rois.json` and
+`config/camera_flow_lines.json`: the ROI now follows the visible carriageway
+edge, and the count line crosses the road. An overlay was checked against
+three early-evening sample frames. The eight existing bursts yielded seven
+quality-qualified records, four retained samples, and a chronological-half
+p95 ratio of 30.737; they predate the geometry change and must not be reused
+as post-change calibration evidence. A fresh 30-frame smoke capture confirmed
+the pipeline applies the revised ROI and configures the flow line; it observed
+zero crossings in that single burst, which is not enough to validate count-line
+performance. A fresh post-change night series then collected 20 bursts (30
+frames each); all 20 analysis records confirm the ROI was applied. Six records
+passed the calibration quality screen, four remained after outlier trimming,
+and no candidate met the 10-sample minimum. The split-half p95 ratio was 4.365.
+Several representative night frames and existing daylight frames were checked
+with the revised overlay, but this series is insufficient for calibration.
+Collect additional free-flow bursts under clearer/brighter conditions and
+review the line-count behavior over more trajectories. The geometry-review
+file's earlier reviewed status does not establish current calibration
+suitability.
+
+To check another period, 30 additional camera 62 bursts were captured
+separately in the 19:00-20:00 window. The dry-run retained 19 samples from 24
+quality-qualified records and estimated 3.078 px/sample-frame. This is about
+47% higher than the preceding period; its chronological halves retained 12
+and 9 samples and had a p95 ratio of 1.931. The report marks split history
+insufficient. Reviewed frames show a junction with buses, pedestrians, and
+turning traffic; still frames do not establish free-flow conditions. This is a
+separate hour period on the same day, not independent-day validation. No
+camera 62 baseline was persisted; camera 71 remains the only configured pilot.
+The capture and dry-run artifacts are in
+`data/motion-calibration-yolo11s-20260926-expansion-10-corrected/` and
+`data/motion-calibration-yolo11s-20260926-camera62-independent-period/`.
+
+Those earlier dry-runs used two screens that hid the actual motion mixture.
+Burst-mean confidence counted empty frames as zero, so camera 59 rejected 13
+of 20 records for low confidence even when occupied frames were around 0.45.
+The old outlier trim also dropped anything above twice the median, which
+removed the faster tail whenever most bursts were stopped and then published
+the stopped cluster as if it were free-flow. Calibration now screens
+occupied-frame confidence when per-frame results exist, keeps a repeated
+faster mode instead of treating it as one spike, and refuses to persist a
+window whose median is far below its upper tail. Records without per-frame
+results still use the burst mean. Camera 71's saved pilot was not rewritten.
+
+Re-screening the existing captures did not produce a baseline. Camera 59's
+20:00-22:00 series now has 17 quality-qualified samples, median 0.28 and p95
+7.22 px/sample-frame, and is blocked as stopped-dominated. Camera 62's
+19:00-20:00 series has 29 quality-qualified samples, median 1.66 and p95
+7.308, also stopped-dominated; its 18:00-19:00 series has 31 samples, median
+1.227 and p95 3.644, and is blocked the same way. The previews are
+`calibration-preview-20-22-mixture-guard.json`,
+`calibration-preview-19-20-mixture-guard.json`, and
+`calibration-preview-18-19-mixture-guard.json` beside the earlier reports.
+No camera 59 or 62 value was persisted.
+
+Capture and analysis succeeded, but these windows are mixed stopped and moving
+traffic, not confirmed free-flow. The next collection still needs a period
+where vehicles are visibly moving steadily, preferably on camera 59 with the
+revised geometry. Do not add a broad camera 62 ROI. Continue to leave the
+calibration rollout checklist below unchecked until an independent period is
+stable under the mixture guard and visually reviewed.
 
 The 2026-08-29 free-flow dry-run returned zero eligible cameras: 30 cameras
 had motion-aware records outside the off-peak window and 81 had no motion
@@ -575,9 +686,175 @@ geometry would produce misleading thresholds.
 Error-path records now carry the same schema as successful ones (null motion
 values), so failed analyses no longer produce structurally inconsistent rows.
 
+### 2026-09-26/27 camera 109 live-feed and daytime calibration probe
+
+Camera 109 (`友誼大橋近氹仔端出口`) was reachable through its DSAT HLS stream.
+An initial 30-frame probe and ten additional 30-frame night bursts produced
+11 healthy records using `yolo11s.pt`. The 20:00-23:00 dry-run candidate was
+3.744 px/sample-frame from 11 quality-qualified samples; its chronological
+halves contained only five and six samples, below the ten-per-half review
+minimum. The earlier loop reused frame paths, so only its last burst image was
+retained.
+
+A fresh daytime image and the all-feed contact sheet clarify the scene: camera
+109 is one elevated bridge view showing opposing carriageways, not a composite
+of independent camera panels. The inventory now classifies it as a corridor
+candidate. The active estimator pools track displacement and does not
+produce direction-specific speeds. The operator later requested separate
+counts and speed baselines for image-left and image-right carriageways; these
+are image-relative labels, not verified compass directions. The full-feed
+visual inventory is in
+`data/camera-feed-inventory-20260927/feed-classification.md`.
+
+On 2026-09-27, 20 additional 30-frame bursts were captured from about
+12:32-12:38 Asia/Macau, each with its own output directory and retained frames.
+All 20 passed the quality screen. The 12:00-14:00 dry-run candidate is 2.874
+px/sample-frame, with median 1.737 and a chronological-half p95 ratio of
+1.278 (10 samples in each half). This candidate is about 23% below the prior
+evening estimate. The review contact sheet is
+`output/camera109-daytime-pilot-20260927/burst-contact-sheet.jpg`; the preview
+is `data/camera109-daytime-pilot-20260927/calibration-preview-12-14.json`.
+
+No calibration was persisted. The configured camera 109 ROI and flow-count
+line remain unset. A preview-only polygon was reviewed on frames from bursts
+01, 10, and 20; it covers both carriageways, trims the top/bottom overlays,
+and includes the narrow center divider because the current config supports a
+single polygon. Re-analysis of all 600 retained frames with that polygon kept
+20/20 samples quality-qualified. The dry-run candidate was 2.902 px/sample-
+frame (median 1.706), only about 1% above the full-frame candidate, while the
+half-to-half p95 ratio increased from 1.278 to 1.437. Thus the mask has little
+effect on the pooled candidate, but the within-period upper-tail difference
+and the roughly 23% lower daytime candidate versus the prior evening estimate
+still warrant review. The overlay is
+`output/camera109-daytime-pilot-20260927/roi-preview-contact-sheet.jpg`, the
+polygon is in `data/camera109-daytime-pilot-20260927/roi-candidate-preview.json`,
+and ROI re-analysis is in `data/camera109-daytime-pilot-20260927/roi-review/`.
+No production ROI, flow line, or speed calibration was written. Obtain another
+separated period after the road mask is approved; add a count line only if
+crossing counts are required.
+
+### 2026-09-27 camera 109 directional-zone preview
+
+The proposed two-zone overlay was visually reviewed on bursts 01, 10, and 20.
+The polygons follow the two visible carriageways, and each candidate line
+crosses its own carriageway. Both zones were then analyzed independently over
+the same 20 retained daytime bursts, using `yolo11s.pt`; these results remain
+preview-only in
+`data/camera109-daytime-pilot-20260927/directional-review/`.
+
+Both zones had 20/20 quality-qualified samples. The image-left candidate was
+2.243 px/sample-frame (median 1.696; chronological-half p95 ratio 1.133);
+the image-right candidate was 3.705 px/sample-frame (median 2.340; ratio
+1.040). Each split still has only ten samples per half and is marked
+`review_required`. These short, contemporaneous samples are not independent
+validation periods and do not establish free-flow conditions, calibrated
+physical speed, or production baselines. The observed asymmetry supports
+keeping carriageways separate in further evaluation, not interpreting the
+candidate values as directly comparable road speeds.
+
+The custom track-history split counted 40 image-left and 46 image-right
+crossings across the bursts, each in one image-space polarity. The
+`northbound`/`southbound` keys in
+`src/trafficcam/analysis/trends.py::compute_directional_flow_split` are
+signed-side conventions, not geographic labels. The separate Supervision
+`LineZone` counter reported 1 image-left crossing and 4 image-right crossings
+across the same bursts, versus 40 and 46 from the custom split. This
+disagreement prompted a counter-contract correction in the following
+validation. No production multi-zone schema, ROI, count line, or camera 109
+calibration has been configured.
+
+### 2026-09-27 camera 109 Sunday afternoon counter validation
+
+Twenty new 30-frame bursts (600 frames total) were captured from camera 109
+between 15:07 and 15:12 Asia/Macau at 5 FPS. All 20 captures completed. The
+sample is limited to camera 109; it does not establish light traffic across
+the wider camera network. The contact sheet is
+`output/camera109-sunday-afternoon-20260927/directional-preview-contact-sheet.jpg`,
+and the capture metadata and replay results are in
+`data/camera109-sunday-afternoon-20260927/`.
+
+On this same sample, the old unbounded centroid split reported image-left
+35/1 and image-right 1/39 crossings in its two signed directions, while the
+Supervision `LineZone` counter reported zero for both zones. The mismatch was
+caused by different rules: the custom split accepted crossings of the
+infinite line extension, while Supervision limited the line segment and used
+all four bounding-box corners plus a two-frame crossing history.
+
+The directional split now checks that each tracked-centroid segment actually
+intersects the configured finite line. `flow_rate_vph`,
+`flow_count_per_burst`, `details.line_crossings`, and the final per-frame
+crossing snapshot now use this single source. The legacy `in`/`out` and
+`northbound`/`southbound` keys share the same line-relative polarity and do
+not identify compass directions. Regression tests cover crossings outside
+the finite segment and equality of the persisted count views.
+
+After correction, the replay counted image-left 35/1 and image-right 1/21
+crossings (`in`/`out`) over the 20 bursts. The right-side reduction from 39
+to 21 confirms that infinite-extension crossings were inflating counts.
+Per-burst outputs now agree by construction; this does not establish
+vehicle-count accuracy against hand labels.
+
+Both directional speed candidates had 20/20 quality-qualified samples.
+Image-left was 3.305 px/sample-frame (median 2.117; chronological-half p95
+ratio 1.151); image-right was 4.208 (median 2.660; ratio 1.219). Density
+labels were mostly light—13 light, 6 moderate, 1 heavy on image-left and 14
+light, 6 moderate on image-right—but this is one bridge camera, not a
+citywide Sunday survey. Each candidate remains marked `review_required`;
+these pixel-motion values are not physical speeds or validated free-flow
+baselines. No ROI, flow line, or camera 109 calibration was persisted.
+
+### 2026-09-27 camera 109 manual crossing-event spot check
+
+For a preliminary visual check, four bursts were selected across the two
+afternoon windows (bursts 01 and 07 in each window). All 30 frames in each
+selected burst were reviewed in paired-carriageway sheets, and each of the
+14 crossing events emitted by the tracker in those bursts was reviewed in a
+short frame sequence around the crossing. The event candidates are listed in
+`data/camera109-manual-review/tracker-event-candidates.json`; review sheets
+and event sequences are under
+`output/camera109-manual-review-first/` and
+`output/camera109-manual-review-second/`.
+
+This is only a visual plausibility spot check, not an accuracy benchmark.
+Several candidate centroids move only a few pixels around the line, and
+vehicles overlap or are small in the 352x288 source, so a crossing caused by
+real vehicle motion cannot always be distinguished confidently from detector
+box jitter. More importantly, the sample was selected from bursts that had
+pipeline-reported crossings: it cannot measure missed crossings (recall) and
+is biased for estimating false-positive rate. No precision, recall, or count
+error percentage should be inferred from these 14 event candidates.
+
+The appropriate next validation is an independently annotated sample: select
+bursts without regard to pipeline output, label every visible vehicle
+crossing (including zero-crossing bursts), and have a second reviewer resolve
+ambiguous occlusions. Compare per-direction counts and crossing timestamps
+against that ground truth before enabling these lines for production.
+
+A second set of 20 bursts (600 frames) was captured the same afternoon from
+15:54 to 16:00. One burst began at 16:00:01, outside the configured
+12:00-16:00 candidate window, so 19 image-left and 18 image-right samples
+qualified in that period; one additional image-right sample lacked sufficient
+track support. The second-period candidates were 3.651 px/sample-frame on
+image-left (median 2.071; split-half p95 ratio 1.662) and 3.600 on image-right
+(median 2.256; ratio 1.284). Densities were mostly light: 17/20 image-left
+and 15/20 image-right.
+
+Comparing the first and second periods, the candidate changed from 3.305 to
+3.651 on image-left (+10.5%) and from 4.208 to 3.600 on image-right (-14.4%).
+A same-day 12:00-16:00 dry-run using all available samples yielded 3.558 for
+image-left (39 qualified samples; combined split-half p95 ratio 1.098) and
+4.003 for image-right (38 samples; ratio 1.183). These multi-window
+aggregates are more stable than the second image-left window alone, but the
+within-window variation and sample-window boundary reinforce that a
+preview-derived baseline should not yet be persisted. The second-period
+overlay and comparison are
+`output/camera109-sunday-afternoon-20260927-1546/directional-preview-contact-sheet.jpg`
+and `data/camera109-sunday-afternoon-20260927-1546/directional-comparison.json`.
+No production calibration was written.
+
 For later work sessions, the remaining priorities in order:
 
-1. collect fresh off-peak motion history, rebuild the Docker image if needed, and run the calibration backfill workflow;
+1. collect fresh, quality-screened free-flow motion history with the target model, rebuild the Docker image if needed, and run the calibration backfill workflow;
 2. verify more camera coordinates and road geometry before enabling additional corridors; replace long point-to-point chords with defensible segment paths;
 3. wire richer segment geometry into the overview API and map rendering while keeping per-camera markers as the drill-down view;
 4. add broader end-to-end coverage for live coordinates, map rendering, detail-panel loading, and UI response flows.

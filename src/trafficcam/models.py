@@ -51,7 +51,8 @@ class FlowSplit:
     """Directional flow split for a single analysis cycle.
 
     `northbound` and `southbound` are int counts of unique vehicles crossing
-    the configured counting line in each direction. `total` is the sum
+    the configured finite counting line in each signed-side direction. These
+    legacy field names do not imply compass directions. `total` is the sum
     (kept for backward-compatibility with consumers that previously read a
     scalar `flow_rate_vph`).
     """

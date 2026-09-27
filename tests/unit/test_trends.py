@@ -109,6 +109,20 @@ def test_directional_flow_split_ignores_tracks_that_never_cross():
     assert split.total == 0
 
 
+def test_directional_flow_split_ignores_crossings_outside_finite_line():
+    line = ((0.25, 0.5), (0.75, 0.5))
+    tracks = [
+        [(1, 0, (0.1, 0.7)), (1, 1, (0.1, 0.3))],
+        [(2, 0, (0.5, 0.7)), (2, 1, (0.5, 0.3))],
+    ]
+
+    split = compute_directional_flow_split(tracks, line)
+
+    assert split.northbound == 1
+    assert split.southbound == 0
+    assert split.total == 1
+
+
 def test_directional_flow_split_counts_track_only_once():
     """A single track that crosses the line multiple times in the same
     direction should be counted at most once per direction.

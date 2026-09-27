@@ -31,6 +31,7 @@ def test_live_capture_is_an_explicit_separate_profile() -> None:
     assert "${PIPELINE_FRAME_COUNT:-5}" in live_capture["command"]
     assert "ports" not in live_capture
     assert live_capture["volumes"] == dashboard["volumes"]
+    assert live_capture["environment"]["VISION_YOLO_MODEL"] == "${VISION_YOLO_MODEL:-yolo11s.pt}"
 
 
 def test_standalone_image_contains_runtime_configuration_and_tools() -> None:

@@ -195,7 +195,17 @@ def test_list_cameras_exposes_flow_split_and_coordinates(tmp_path: Path) -> None
     _seed_analysis(store)
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "camera_speed_calibration.json").write_text(
-        json.dumps({"cameras": {"cam1": {"freeflow_px_per_frame": 12.5, "sample_count": 7, "offpeak_hours": "02-05"}}}),
+        json.dumps(
+            {
+                "cameras": {
+                    "cam1": {
+                        "freeflow_px_per_frame": 12.5,
+                        "sample_count": 7,
+                        "sampling_window_local": "10:00-13:00 Asia/Macau",
+                    }
+                }
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -212,7 +222,8 @@ def test_list_cameras_exposes_flow_split_and_coordinates(tmp_path: Path) -> None
             "is_calibrated": True,
             "freeflow_px_per_frame": 12.5,
             "sample_count": 7,
-            "offpeak_hours": "02-05",
+            "offpeak_hours": None,
+            "sampling_window_local": "10:00-13:00 Asia/Macau",
         }
 
 
@@ -279,6 +290,7 @@ def test_get_camera_returns_latest_detail(tmp_path: Path) -> None:
             "freeflow_px_per_frame": 12.5,
             "sample_count": 7,
             "offpeak_hours": "02-05",
+            "sampling_window_local": None,
         }
 
 
@@ -323,6 +335,7 @@ def test_get_camera_returns_manifest_only_detail(tmp_path: Path, monkeypatch: py
         "freeflow_px_per_frame": None,
         "sample_count": None,
         "offpeak_hours": None,
+        "sampling_window_local": None,
     }
 
 
@@ -540,7 +553,7 @@ def test_get_overview_reports_calibration_readiness(tmp_path: Path, monkeypatch:
     )
     store = JsonStore(tmp_path)
 
-    for index in range(5):
+    for index in range(10):
         store.save_json(
             f"analyses/50/{index:03d}.json",
             {
@@ -552,6 +565,13 @@ def test_get_overview_reports_calibration_readiness(tmp_path: Path, monkeypatch:
                     "density": "moderate",
                     "congestion_score": 40.0,
                     "median_speed_px_per_frame": 10.0 + index,
+                    "mean_confidence": 0.9,
+                    "active_tracks": 3,
+                    "detector_model": "yolo11s.pt",
+                    "motion_support": {
+                        "eligible_tracks": 3,
+                        "eligible_tracks_evaluated": True,
+                    },
                     "capture_result": {
                         "name": "Cam 50",
                         "district": "澳門區",

@@ -4,6 +4,7 @@ x-runtime-environment: &runtime-environment
   PIPELINE_DATA_DIR: ${PIPELINE_DATA_DIR:-data}
   TRACKER_BACKEND: ${TRACKER_BACKEND:-simple}
   CAPTURE_BURST_FPS: ${CAPTURE_BURST_FPS:-5.0}
+  VISION_YOLO_MODEL: ${VISION_YOLO_MODEL:-yolo11s.pt}
   MODEL_CACHE_DIR: /app/model-cache
   HF_HOME: /app/model-cache/huggingface
   TRANSFORMERS_CACHE: /app/model-cache/huggingface

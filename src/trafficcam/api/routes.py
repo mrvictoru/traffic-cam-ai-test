@@ -13,6 +13,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from trafficcam.calibration import (
+    DEFAULT_CALIBRATION_MIN_ELIGIBLE_TRACKS,
+    DEFAULT_CALIBRATION_MIN_HISTORY,
+    DEFAULT_CALIBRATION_MIN_MEAN_CONFIDENCE,
     build_human_calibration,
     load_camera_calibrations,
     summarize_calibration_coverage,
@@ -100,7 +103,9 @@ _DENSITY_FROM_SCORE = (
     (50.0, "heavy"),
     (25.0, "moderate"),
 )
-_CALIBRATION_MIN_HISTORY = 5
+_CALIBRATION_MIN_HISTORY = DEFAULT_CALIBRATION_MIN_HISTORY
+_CALIBRATION_MIN_MEAN_CONFIDENCE = DEFAULT_CALIBRATION_MIN_MEAN_CONFIDENCE
+_CALIBRATION_MIN_ELIGIBLE_TRACKS = DEFAULT_CALIBRATION_MIN_ELIGIBLE_TRACKS
 _CALIBRATION_OFFPEAK_START = 2
 _CALIBRATION_OFFPEAK_END = 5
 _OUTPUT_PREFIX = "output/"
@@ -412,6 +417,7 @@ def _calibration_status(camera_id: str, calibrations: dict[str, dict[str, Any]])
             "freeflow_px_per_frame": None,
             "sample_count": None,
             "offpeak_hours": None,
+            "sampling_window_local": None,
         }
     sample_count = entry.get("sample_count")
     if isinstance(sample_count, float) and sample_count.is_integer():
@@ -422,6 +428,11 @@ def _calibration_status(camera_id: str, calibrations: dict[str, dict[str, Any]])
         "freeflow_px_per_frame": float(freeflow),
         "sample_count": sample_count if isinstance(sample_count, int) else None,
         "offpeak_hours": str(entry.get("offpeak_hours")) if entry.get("offpeak_hours") else None,
+        "sampling_window_local": (
+            str(entry.get("sampling_window_local"))
+            if entry.get("sampling_window_local")
+            else None
+        ),
     }
 
 
@@ -581,6 +592,8 @@ def _overview_human_calibration(
         offpeak_start=_CALIBRATION_OFFPEAK_START,
         offpeak_end=_CALIBRATION_OFFPEAK_END,
         min_history=_CALIBRATION_MIN_HISTORY,
+        min_mean_confidence=_CALIBRATION_MIN_MEAN_CONFIDENCE,
+        min_eligible_tracks=_CALIBRATION_MIN_ELIGIBLE_TRACKS,
     )
 
 
@@ -652,11 +665,32 @@ def _format_calibration_summary(summary: dict[str, Any], *, refreshing: bool = F
         "missing": int(summary.get("missing_count") or 0),
         "ready": int(status_counts.get("ready") or 0),
         "insufficient_history": int(status_counts.get("insufficient_history") or 0),
+        "low_quality_history": int(status_counts.get("low_quality_history") or 0),
         "missing_motion_history": int(status_counts.get("missing_motion_history") or 0),
         "no_offpeak_history": int(status_counts.get("no_offpeak_history") or 0),
         "no_history": int(status_counts.get("no_history") or 0),
         "offpeak_hours": summary.get("offpeak_hours"),
+        "sampling_window_local": summary.get("sampling_window_local"),
+        "detector_model": summary.get("detector_model"),
         "min_history": int(summary.get("min_history") or _CALIBRATION_MIN_HISTORY),
+        "min_mean_confidence": float(
+            summary.get("quality_thresholds", {}).get(
+                "min_mean_confidence",
+                _CALIBRATION_MIN_MEAN_CONFIDENCE,
+            )
+        ),
+        "min_eligible_tracks": int(
+            summary.get("quality_thresholds", {}).get(
+                "min_eligible_tracks",
+                _CALIBRATION_MIN_ELIGIBLE_TRACKS,
+            )
+        ),
+        "min_active_tracks": int(
+            summary.get("quality_thresholds", {}).get(
+                "min_active_tracks",
+                _CALIBRATION_MIN_ELIGIBLE_TRACKS,
+            )
+        ),
         "next_ready_camera_ids": list((summary.get("status_camera_ids") or {}).get("ready", []))[:5],
         "refreshing": refreshing,
     }
@@ -676,6 +710,8 @@ def _refresh_calibration_summary(
             min_history=_CALIBRATION_MIN_HISTORY,
             offpeak_start=_CALIBRATION_OFFPEAK_START,
             offpeak_end=_CALIBRATION_OFFPEAK_END,
+            min_mean_confidence=_CALIBRATION_MIN_MEAN_CONFIDENCE,
+            min_eligible_tracks=_CALIBRATION_MIN_ELIGIBLE_TRACKS,
         )
         with _CALIBRATION_SUMMARY_LOCK:
             _CALIBRATION_SUMMARY_CACHE["key"] = signature

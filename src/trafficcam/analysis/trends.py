@@ -62,18 +62,34 @@ def _signed_side(p: Point, line: tuple[Point, Point]) -> float:
 def _crosses_line(
     p_prev: Point, p_curr: Point, line: tuple[Point, Point]
 ) -> bool:
-    """True if the segment p_prev->p_curr intersects (or reaches) the line.
+    """True if the centroid segment reaches the finite configured line.
 
-    Reaching the line counts as crossing: at 1 fps a centroid often lands
-    exactly on the counting line between frames and would otherwise never
-    register under a strict sign-flip rule.
+    Reaching the line counts as crossing so a centroid that lands on the line
+    between samples can be counted. Crossings of the line's infinite
+    extension are excluded.
     """
     s_prev = _signed_side(p_prev, line)
     s_curr = _signed_side(p_curr, line)
     if s_prev == s_curr:
         return False
-    # Sign flip, or movement onto/from the line itself.
-    return (s_prev > 0 >= s_curr) or (s_prev <= 0 < s_curr)
+    if not ((s_prev > 0 >= s_curr) or (s_prev <= 0 < s_curr)):
+        return False
+
+    (x1, y1), (x2, y2) = line
+    line_dx = x2 - x1
+    line_dy = y2 - y1
+    line_length_sq = line_dx * line_dx + line_dy * line_dy
+    if line_length_sq == 0:
+        return False
+
+    fraction = s_prev / (s_prev - s_curr)
+    intersection_x = p_prev[0] + fraction * (p_curr[0] - p_prev[0])
+    intersection_y = p_prev[1] + fraction * (p_curr[1] - p_prev[1])
+    projection = (
+        (intersection_x - x1) * line_dx + (intersection_y - y1) * line_dy
+    ) / line_length_sq
+    tolerance = 1e-9
+    return -tolerance <= projection <= 1 + tolerance
 
 
 def compute_directional_flow_split(

@@ -323,9 +323,10 @@ function renderCalibrationPanel(calibration) {
   const headline = calibration.human_required
     ? `Human calibration required — ${calibration.human_remaining} map/ROI/corridor items still need a person.`
     : 'No blocking human calibration items.';
-  const windowLabel = windowInfo.in_offpeak_window
-    ? '02:00–05:00 Asia/Macau collection window is open now. Evening/daytime captures cannot be used as free-flow speeds.'
-    : `Free-flow collection window is 02:00–05:00 Asia/Macau. Next window ${windowInfo.next_window_start || 'tonight'}; do not run calibrate-freeflow until then.`;
+  const recommendedWindow = windowInfo.is_recommended_window ?? windowInfo.in_offpeak_window;
+  const windowLabel = recommendedWindow
+    ? 'Quiet-traffic proxy window (02:00–05:00 Asia/Macau) is open. Other hours are valid when footage is reviewed as freely flowing.'
+    : '02:00–05:00 Asia/Macau is a recommended quiet-traffic proxy, not a requirement. Review the actual footage before calibration.';
   panel.hidden = false;
   panel.innerHTML =
     `<div class="cal-head"><strong>${headline}</strong><span class="muted">${windowLabel}</span></div>` +

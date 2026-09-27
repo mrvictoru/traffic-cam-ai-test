@@ -21,7 +21,7 @@ class Settings:
     # Vision model
     vision_backend: str = os.getenv("VISION_BACKEND", "yolo")
     vision_model_name: str = os.getenv("VISION_MODEL", "google/owlv2-base-patch16-ensemble")
-    vision_yolo_model_name: str = os.getenv("VISION_YOLO_MODEL", "yolov8n.pt")
+    vision_yolo_model_name: str = os.getenv("VISION_YOLO_MODEL", "yolo11s.pt")
     model_cache_dir: str = os.getenv("MODEL_CACHE_DIR", os.path.join(os.getcwd(), "model-cache"))
     huggingface_cache_dir: str = os.getenv(
         "HF_HOME",
@@ -123,6 +123,18 @@ class Settings:
     # At or below this ratio traffic is considered stalled (speed score 100);
     # at 1.0 (free flow) the speed score is 0. Linear in between.
     speed_stall_ratio: float = float(os.getenv("SPEED_STALL_RATIO", "0.15"))
+    motion_min_track_points: int = int(os.getenv("MOTION_MIN_TRACK_POINTS", "3"))
+    motion_min_tracks: int = int(os.getenv("MOTION_MIN_TRACKS", "2"))
+    motion_min_observed_seconds: float = float(
+        os.getenv("MOTION_MIN_OBSERVED_SECONDS", "1.5")
+    )
+    motion_slow_ratio: float = float(os.getenv("MOTION_SLOW_RATIO", "0.15"))
+    motion_freeflow_ratio: float = float(
+        os.getenv("MOTION_FREEFLOW_RATIO", "0.60")
+    )
+    motion_stopped_fraction: float = float(
+        os.getenv("MOTION_STOPPED_FRACTION", "0.60")
+    )
 
 
 settings = Settings()

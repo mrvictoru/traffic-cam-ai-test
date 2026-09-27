@@ -2,7 +2,8 @@
 
 This project currently provides live **provisional** traffic estimates. It is
 not yet a Google-Maps-like traffic layer because only 6 of 111 camera positions
-are verified and no camera has a persisted free-flow speed baseline.
+are verified. Camera 71 has an initial YOLO11s relative-motion baseline;
+other cameras remain uncalibrated, and the baseline is not a physical speed.
 
 Do the steps below in order. The dashboard exposes the same checklist in the
 `Human calibration required` panel and in the `/api/overview` payload.
@@ -68,14 +69,27 @@ Verify the camera positions, direction of travel, and camera order in
 `config/camera_corridors.json` before setting `enabled` to `true`. Do not use
 long point-to-point chords as a substitute for verified road geometry.
 
-## 5. Collect free-flow motion history (automated, time-gated)
+## 5. Collect reviewed free-flow motion history
 
-Free-flow calibration only accepts motion samples captured from **02:00 to
-05:00 Asia/Macau**. This is 18:00 to 21:00 UTC on the previous date.
+The default sample window is **02:00-05:00 Asia/Macau** (18:00-21:00 UTC on the
+previous date), because it is a useful quiet-traffic proxy. It is not a
+technical requirement. Samples from any local-time window may be considered
+when a person verifies that observed vehicles are moving freely. Empty scenes,
+queues, red-light stops, and slow/stopped traffic are not free-flow evidence.
 
-Capture at least five frames per camera. Five frames allow the simple tracker
-to estimate motion; a one-frame capture can refresh occupancy but cannot
-provide a useful speed sample.
+Use at least 30 frames per burst at 5 FPS (about 5.8 seconds) and multiple
+bursts per camera. Calibration also screens each analysis record using
+provisional defaults of mean detector confidence >= 0.25 and at least 2
+eligible tracks (track histories long enough for a speed estimate). These are
+data-quality filters, not measured accuracy guarantees.
+Keep the detector, tracker, FPS, and model version the same between capture
+and the pipeline that will use the baseline.
+The configured YOLO default is YOLO11s (`yolo11s.pt`). Confirm each persisted
+analysis record's `details.detector_model` before combining it with other
+history; do not mix models when estimating a baseline.
+The legacy `--min-active-tracks` CLI spelling and `min_active_tracks` report
+field remain aliases for compatibility; both now refer to the minimum
+speed-eligible track count, not the tracker’s raw active-track count.
 
 For a complete collection run:
 
@@ -87,14 +101,16 @@ For a bounded test run:
 
 ```bash
 docker compose --profile capture run --no-deps live-capture run-once \
-  --frame-count 5 \
+  --frame-count 30 \
   --manifest-file data/manifest.json \
   --output-dir output/live \
   --data-dir data
 ```
 
-Daytime and evening captures are still useful for current occupancy, but they
-must not be treated as free-flow speeds.
+The calibrator defaults to the quiet-traffic proxy, but accepts another
+Asia/Macau hour window when the footage has been reviewed. For example, use
+`--window-start 10 --window-end 13` to select 10:00-13:00. The legacy
+`--offpeak-start` and `--offpeak-end` spellings remain accepted.
 
 During heavy rain, do not use the affected frames for calibration review.
 Rain streaks, glare, reflections, spray, and wipers can reduce detector
@@ -103,21 +119,42 @@ weather condition with the capture and repeat the geometry check in a clear
 daylight window. Rain-affected observations may remain visible as provisional
 live data, but they should not be used to establish a baseline.
 
-## 6. Preview and persist free-flow calibration (automated)
+## 6. Preview and persist free-flow calibration (automated, review required)
 
-Preview the cameras that have enough valid off-peak motion history:
-
-```bash
-docker compose exec macau-feed python -m trafficcam.cli \
-  calibrate-freeflow --data-dir data --dry-run --pretty
-```
-
-Only after reviewing the dry-run output, persist the baselines:
+Preview quality-screened cameras for the default window:
 
 ```bash
 docker compose exec macau-feed python -m trafficcam.cli \
-  calibrate-freeflow --data-dir data --pretty
+  calibrate-freeflow --data-dir data --min-history 10 \
+  --min-mean-confidence 0.25 --min-eligible-tracks 2 --dry-run --pretty
 ```
+
+For a reviewed alternate window, add its local hours, for example:
+
+```bash
+docker compose exec macau-feed python -m trafficcam.cli \
+  calibrate-freeflow --data-dir data --window-start 10 --window-end 13 \
+  --min-history 10 --min-mean-confidence 0.25 --min-eligible-tracks 2 \
+  --dry-run --pretty
+```
+
+The preview reports accepted/rejected records, median and p95 speeds, and p95
+values for the chronological halves of the sample. Review those diagnostics
+and the corresponding footage before persisting. A candidate can meet the
+minimum sample count and still be unstable; there is not yet a validated
+cross-window stability tolerance. If the preview is acceptable, rerun the
+same command without `--dry-run` to persist the baselines:
+
+```bash
+docker compose exec macau-feed python -m trafficcam.cli \
+  calibrate-freeflow --data-dir data --min-history 10 \
+  --min-mean-confidence 0.25 --min-eligible-tracks 2 --pretty
+```
+
+The default calibration filters for `yolo11s.pt` records and stores that model
+identifier with each baseline. Use `--detector-model` only when intentionally
+calibrating another exact model; records with absent or different model
+metadata are excluded.
 
 Then audit the rollout:
 
@@ -126,11 +163,14 @@ docker compose exec macau-feed python -m trafficcam.cli \
   audit-config --pretty --report-file output/config-audit.json
 ```
 
-The dashboard should only label a camera **reliable** when its observation is
-fresh, its detector confidence is adequate, and a free-flow baseline is
-configured. Fresh observations without calibration remain **provisional**.
+The stored baseline is camera-relative pixels per sampled frame, not km/h.
+Physical speed requires separate camera geometry calibration and measured
+reference distances. The dashboard should only label a camera **reliable**
+when its observation is fresh, its detector confidence is adequate, and a
+free-flow baseline is configured. Fresh observations without calibration
+remain **provisional**.
 
-## Current checkpoint status
+## Historical checkpoint status
 
 At the 2026-08-29 calibration pass:
 
@@ -148,8 +188,8 @@ At the 2026-08-29 calibration pass:
   60 and 62 were added from exact OpenStreetMap named-place results; ambiguous
   road-only geocoding results were rejected.
 - 3 corridors were enabled and live; 4 remained disabled.
-- All traffic remains provisional until valid off-peak free-flow history is
-  captured and calibrated.
+- All traffic remained provisional at that checkpoint until valid free-flow
+  history was captured and calibrated.
 - Heavy rain is a data-quality warning: postpone calibration and repeat the
   capture in clear conditions rather than treating rain-affected detections as
   normal traffic.

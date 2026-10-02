@@ -36,6 +36,8 @@ class ZeroShotDetector:
     - `yolo`: closed-set object detection using YOLO class labels.
     """
 
+    supports_burst = True
+
     def __init__(
         self,
         backend: str | None = None,
@@ -232,4 +234,3 @@ class ZeroShotDetector:
     def analyze_burst(self, frame_paths: list[str], camera_id: str | None = None) -> list[dict[str, Any]]:
         """Analyze a burst of frames and return per-frame results."""
         return [self.analyze(path, camera_id=camera_id) for path in frame_paths]
-

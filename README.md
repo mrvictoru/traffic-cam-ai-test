@@ -180,6 +180,25 @@ refreshes in the background without delaying dashboard requests.
 docker run --rm --entrypoint python macau-feed -m pytest -q
 ```
 
+### Use the NVIDIA TrafficCamNet vision backend
+
+TrafficCamNet runs as a separate DeepStream/GPU sidecar; the application image
+remains CPU-only. The standard Compose deployment with TrafficCamNet selected
+is:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.trafficcamnet-service.yml up --build
+```
+
+The service requires NVIDIA GPU passthrough and the TrafficCamNet model cache
+under `data/trafficcamnet-test/models/`. It accepts one ordered frame burst per
+camera and returns detections using the existing analysis contract. Service
+errors are recorded for that camera; no automatic YOLO fallback is performed.
+For a manual YOLO rollback, run the base Compose file without the overlay and
+set `VISION_BACKEND=yolo`. See
+[the TrafficCamNet backend guide](./tools/trafficcamnet_service/README.md) for
+model preparation, API limits, health checks, and smoke tests.
+
 ### Docker Compose
 
 ```bash

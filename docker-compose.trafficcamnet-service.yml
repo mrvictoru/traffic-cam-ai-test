@@ -1,0 +1,40 @@
+services:
+  macau-feed:
+    environment:
+      VISION_BACKEND: ${VISION_BACKEND:-trafficcamnet}
+      VISION_TRAFFICCAMNET_URL: ${VISION_TRAFFICCAMNET_URL:-http://trafficcamnet-vision:8080}
+      VISION_TRAFFICCAMNET_TIMEOUT_SECONDS: ${VISION_TRAFFICCAMNET_TIMEOUT_SECONDS:-20}
+      VISION_TRAFFICCAMNET_MAX_BURST_FRAMES: ${VISION_TRAFFICCAMNET_MAX_BURST_FRAMES:-30}
+      VISION_TRAFFICCAMNET_MAX_BURST_BYTES: ${VISION_TRAFFICCAMNET_MAX_BURST_BYTES:-16777216}
+    depends_on:
+      trafficcamnet-vision:
+        condition: service_healthy
+
+  trafficcamnet-vision:
+    build:
+      context: .
+      dockerfile: tools/trafficcamnet_service/Dockerfile
+    image: trafficcam-trafficcamnet-vision:deepstream-7.1
+    platform: linux/amd64
+    gpus: all
+    restart: unless-stopped
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      TRAFFICCAMNET_CONFIG_PATH: /test/config_infer_primary.txt
+      TRAFFICCAMNET_INFERENCE_TIMEOUT_SECONDS: ${TRAFFICCAMNET_INFERENCE_TIMEOUT_SECONDS:-15}
+      TRAFFICCAMNET_MAX_FRAMES: ${VISION_TRAFFICCAMNET_MAX_BURST_FRAMES:-30}
+      TRAFFICCAMNET_MAX_BURST_BYTES: ${VISION_TRAFFICCAMNET_MAX_BURST_BYTES:-16777216}
+    volumes:
+      - ./data/trafficcamnet-test/models:/work/models
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 300s

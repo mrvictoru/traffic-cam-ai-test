@@ -30,7 +30,7 @@ from trafficcam.ingestion.dsat_client import DEFAULT_INDEX_URL, DSATClient
 from trafficcam.models import FlowSplit
 from trafficcam.storage.json_store import JsonStore
 from trafficcam.storage.index import append_to_index, rebuild_camera_index
-from trafficcam.vision import ZeroShotDetector, SceneClassifier, build_tracker
+from trafficcam.vision import create_detector, SceneClassifier, build_tracker
 from trafficcam.vision.density_scorer import DensityScorer
 from trafficcam.vision.speed_estimator import (
     estimate_track_speeds,
@@ -180,11 +180,11 @@ def _analyze_burst(
     roi_polygon: list[list[float]] | None = None,
     flow_line: tuple[tuple[float, float], tuple[float, float]] | None = None,
     data_dir: str | Path | None = None,
-    detector: ZeroShotDetector | None = None,
+    detector: Any | None = None,
     scene_classifier: SceneClassifier | None = None,
 ) -> dict[str, Any]:
-    """Analyze a burst of frames using zero-shot detection + tracking + scene classification."""
-    detector = detector if detector is not None else ZeroShotDetector()
+    """Analyze a frame burst using the configured detector, tracker, and scene classifier."""
+    detector = detector if detector is not None else create_detector()
     scene_classifier = scene_classifier if scene_classifier is not None else SceneClassifier()
     detector_backend = getattr(detector, "backend", None)
     if not isinstance(detector_backend, str):
@@ -213,8 +213,19 @@ def _analyze_burst(
     if settings.supervision_debug_frames_enabled and frame_paths:
         debug_output_dir = Path(frame_paths[0]).parent / settings.supervision_debug_dirname
 
-    for idx, frame_path in enumerate(frame_paths):
-        detection = detector.analyze(frame_path, camera_id=camera_id)
+    if getattr(detector, "supports_burst", False) is True:
+        burst_detections = detector.analyze_burst(frame_paths, camera_id=camera_id)
+        if not isinstance(burst_detections, list) or len(burst_detections) != len(frame_paths):
+            raise RuntimeError(
+                "Detector burst response frame count did not match the requested burst"
+            )
+    else:
+        burst_detections = [
+            detector.analyze(frame_path, camera_id=camera_id)
+            for frame_path in frame_paths
+        ]
+
+    for idx, (frame_path, detection) in enumerate(zip(frame_paths, burst_detections)):
         # Frame size is needed whenever ROI filtering, flow lines, or
         # coverage measurement apply.
         if roi_polygon or flow_line or detection.get("detections"):
@@ -581,7 +592,7 @@ def _run_single_cycle(
         # the remaining cameras in the cycle.
         try:
             if "detector" not in runtime:
-                runtime["detector"] = ZeroShotDetector()
+                runtime["detector"] = create_detector()
             if "scene_classifier" not in runtime:
                 runtime["scene_classifier"] = SceneClassifier()
             analysis = _analyze_burst(

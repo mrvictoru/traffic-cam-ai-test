@@ -40,6 +40,19 @@ class Settings:
     )
     vision_device: str = os.getenv("VISION_DEVICE", "cpu")
     vision_confidence_threshold: float = float(os.getenv("VISION_CONFIDENCE", "0.3"))
+    vision_trafficcamnet_url: str = os.getenv(
+        "VISION_TRAFFICCAMNET_URL",
+        "http://trafficcamnet-vision:8080",
+    )
+    vision_trafficcamnet_timeout_seconds: float = float(
+        os.getenv("VISION_TRAFFICCAMNET_TIMEOUT_SECONDS", "20")
+    )
+    vision_trafficcamnet_max_burst_frames: int = int(
+        os.getenv("VISION_TRAFFICCAMNET_MAX_BURST_FRAMES", "30")
+    )
+    vision_trafficcamnet_max_burst_bytes: int = int(
+        os.getenv("VISION_TRAFFICCAMNET_MAX_BURST_BYTES", str(16 * 1024 * 1024))
+    )
 
     # Object classes to detect (configurable list of text queries for zero-shot model)
     # Broader queries improve recall on varied camera angles and distances

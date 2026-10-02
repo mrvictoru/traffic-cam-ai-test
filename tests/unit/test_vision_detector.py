@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from trafficcam.vision import ZeroShotDetector
+from trafficcam.vision import TrafficCamNetClient, ZeroShotDetector, create_detector
 from trafficcam.vision.density_scorer import DensityScorer
 
 
@@ -202,6 +202,11 @@ class TestZeroShotDetectorFallback:
     def test_invalid_backend_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unsupported vision backend"):
             ZeroShotDetector(backend="unknown")
+
+    def test_factory_selects_trafficcamnet_without_local_model_loading(self) -> None:
+        detector = create_detector(backend="trafficcamnet")
+        assert isinstance(detector, TrafficCamNetClient)
+        assert detector.backend == "trafficcamnet"
 
     def test_resolve_yolo_model_source_prefers_cached_weight(
         self,

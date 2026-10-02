@@ -23,6 +23,9 @@ services:
     environment:
       <<: *runtime-environment
       PIPELINE_AUTOSTART: "0"
+      VISION_BACKEND: ${VISION_BACKEND:-yolo}
+      VISION_TRAFFICCAMNET_URL: ${VISION_TRAFFICCAMNET_URL:-http://trafficcamnet-vision:8080}
+      VISION_TRAFFICCAMNET_TIMEOUT_SECONDS: ${VISION_TRAFFICCAMNET_TIMEOUT_SECONDS:-20}
     volumes: *runtime-volumes
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
 

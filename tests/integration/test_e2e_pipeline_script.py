@@ -126,6 +126,49 @@ def _create_synthetic_frames(output_dir: Path, count: int = 3) -> list[str]:
     return paths
 
 
+def test_analyze_burst_uses_remote_burst_interface_once(tmp_path: Path) -> None:
+    class BurstDetector:
+        supports_burst = True
+        backend = "trafficcamnet"
+        model_name = "test-model"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def analyze_burst(self, frame_paths, camera_id=None):
+            self.calls.append((frame_paths, camera_id))
+            return [
+                {
+                    "image_path": path,
+                    "label": "light",
+                    "confidence": 0.0,
+                    "detections": [],
+                    "vehicle_count": 0,
+                }
+                for path in frame_paths
+            ]
+
+        def analyze(self, *_args, **_kwargs):
+            raise AssertionError("burst-capable detectors must be called once per burst")
+
+    detector = BurstDetector()
+    classifier = _mock_scene_classifier()
+
+    result = _analyze_burst(
+        ["frame-a.jpg", "frame-b.jpg"],
+        "camera-burst-test",
+        {"sample_fps": 5.0},
+        data_dir=tmp_path,
+        detector=detector,
+        scene_classifier=classifier,
+    )
+
+    assert detector.calls == [(["frame-a.jpg", "frame-b.jpg"], "camera-burst-test")]
+    assert result["details"]["detector_backend"] == "trafficcamnet"
+    assert result["details"]["detector_model"] == "test-model"
+    assert result["details"]["frame_count"] == 2
+
+
 def test_roi_filtered_detections_recompute_count_label(tmp_path: Path) -> None:
     detector = MagicMock()
     detector.analyze.return_value = {
@@ -150,7 +193,7 @@ def test_roi_filtered_detections_recompute_count_label(tmp_path: Path) -> None:
     tracker.backend_name = "simple"
 
     with (
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=detector),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=detector),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=classifier),
         patch("scripts.run_e2e_pipeline.build_tracker", return_value=tracker),
         patch("scripts.run_e2e_pipeline.image_size", return_value=(320, 240)),
@@ -211,7 +254,7 @@ def test_run_pipeline_persists_analysis_and_incidents(tmp_path: Path) -> None:
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=_mock_detector()),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=_mock_detector()),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()),
     ):
         result = run_pipeline(
@@ -266,7 +309,7 @@ def test_run_pipeline_skips_analysis_for_failed_capture(tmp_path: Path) -> None:
 
     with (
         patch("subprocess.run", return_value=failed),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=detector),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=detector),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()),
     ):
         result = run_pipeline(
@@ -324,7 +367,7 @@ def test_run_pipeline_periodic_creates_multiple_records(tmp_path: Path) -> None:
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=_mock_detector()) as detector_class,
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=_mock_detector()) as detector_class,
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()) as scene_class,
         patch("scripts.run_e2e_pipeline.TrendAnalyzer") as analyzer_class,
     ):
@@ -390,7 +433,7 @@ def test_run_pipeline_relaxes_low_confidence_night_blocked_label(tmp_path: Path)
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=_mock_blocked_low_confidence_detector()),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=_mock_blocked_low_confidence_detector()),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_night_scene_classifier()),
     ):
         result = run_pipeline(
@@ -448,7 +491,7 @@ def test_run_pipeline_relaxes_low_confidence_night_heavy_label(tmp_path: Path) -
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=_mock_heavy_low_confidence_detector()),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=_mock_heavy_low_confidence_detector()),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_night_scene_classifier()),
     ):
         result = run_pipeline(
@@ -504,7 +547,7 @@ def test_run_pipeline_keeps_daytime_heavy_label(tmp_path: Path) -> None:
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=_mock_heavy_low_confidence_detector()),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=_mock_heavy_low_confidence_detector()),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()),
     ):
         result = run_pipeline(
@@ -595,7 +638,7 @@ def test_run_pipeline_persists_directional_flow_split(tmp_path: Path) -> None:
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=detector),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=detector),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()),
         patch("scripts.run_e2e_pipeline.build_tracker", return_value=SimpleTracker(iou_threshold=0.3, max_age=2)),
         patch("scripts.run_e2e_pipeline.settings", runtime_settings),
@@ -682,7 +725,7 @@ def test_run_pipeline_exports_debug_frames_when_enabled(tmp_path: Path) -> None:
 
     with (
         patch("subprocess.run", side_effect=mock_ffmpeg),
-        patch("scripts.run_e2e_pipeline.ZeroShotDetector", return_value=_mock_detector()),
+        patch("scripts.run_e2e_pipeline.create_detector", return_value=_mock_detector()),
         patch("scripts.run_e2e_pipeline.SceneClassifier", return_value=_mock_scene_classifier()),
         patch("scripts.run_e2e_pipeline.build_tracker", return_value=SimpleTracker(iou_threshold=0.3, max_age=2)),
         patch("scripts.run_e2e_pipeline.settings", runtime_settings),

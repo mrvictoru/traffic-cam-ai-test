@@ -12,6 +12,10 @@ legacy `northbound`/`southbound` and `in`/`out` fields describe line-relative
 polarity, not verified compass directions. Use `image_left` and `image_right`
 until the roadway headings have been independently verified.
 
+The 2026-09-28 independent-sample preparation and exploratory replay audit
+are documented in [the independent count audit](./camera109-independent-count-audit.md).
+It did not produce adjudicated count ground truth or authorize a shadow pilot.
+
 ## Existing evidence
 
 Use the retained afternoon captures, not another live capture:

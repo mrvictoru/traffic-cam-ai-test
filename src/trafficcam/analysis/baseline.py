@@ -24,7 +24,7 @@ def baseline_values(
     *,
     window_records: int,
     hour_buckets: int,
-    series_extractor: Callable[[dict], float | int],
+    series_extractor: Callable[[dict], float | int | None],
 ) -> list[float]:
     """Return prior-series values used as the anomaly baseline.
 
@@ -38,7 +38,12 @@ def baseline_values(
         prior_records = [record for record in prior_records if hour_of(record) == target_hour]
     if window_records > 0:
         prior_records = prior_records[-window_records:]
-    return [float(series_extractor(record)) for record in prior_records]
+    values: list[float] = []
+    for record in prior_records:
+        value = series_extractor(record)
+        if value is not None:
+            values.append(float(value))
+    return values
 
 
 def zscore_with_window(

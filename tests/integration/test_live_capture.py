@@ -1,7 +1,11 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from trafficcam.ingestion.dsat_client import DSATClient
+
+pytestmark = pytest.mark.live
 
 
 def test_extracts_live_frames_from_two_different_feeds():

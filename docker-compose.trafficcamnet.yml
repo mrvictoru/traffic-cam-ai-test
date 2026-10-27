@@ -1,0 +1,55 @@
+services:
+  trafficcamnet-test:
+    image: nvcr.io/nvidia/deepstream:7.1-triton-multiarch
+    platform: linux/amd64
+    gpus: all
+    profiles: ["trafficcamnet"]
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      TRAFFICCAMNET_LIMIT: ${TRAFFICCAMNET_LIMIT:-0}
+    volumes:
+      - ./tools/trafficcamnet-test:/test:ro
+      - ./data/trafficcamnet-test:/work
+    entrypoint: ["/bin/bash", "/test/run-container.sh"]
+
+  trafficcamnet-comparison:
+    build:
+      context: .
+      dockerfile: tools/model-comparison/Dockerfile.deepstream
+    image: trafficcamnet-comparison:deepstream-7.1
+    platform: linux/amd64
+    gpus: all
+    profiles: ["model-comparison"]
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      MODEL_COMPARISON_DIR: /data
+    volumes:
+      - ${MODEL_COMPARISON_HOST_DIR:-./data/model-comparison}:/data
+      - ./tools/model-comparison:/compare:ro
+      - ./tools/trafficcamnet-test:/test:ro
+      - ./data/trafficcamnet-test:/work
+    entrypoint: ["python3", "/compare/deepstream_infer.py"]
+
+  yolo-comparison:
+    build:
+      context: .
+      dockerfile: tools/model-comparison/Dockerfile.yolo
+    image: trafficcam-yolo-comparison:cuda
+    gpus: all
+    profiles: ["model-comparison"]
+    environment:
+      MODEL_COMPARISON_DIR: /data
+      VISION_DEVICE: cuda:0
+      VISION_YOLO_MODEL: yolo11s.pt
+      MODEL_CACHE_DIR: /app/model-cache
+      ULTRALYTICS_HOME: /app/model-cache/ultralytics
+      HF_HOME: /app/model-cache/huggingface
+      TRANSFORMERS_CACHE: /app/model-cache/huggingface
+      YOLO_CONFIG_DIR: /tmp
+    volumes:
+      - .:/app
+      - ./model-cache:/app/model-cache
+      - ${MODEL_COMPARISON_HOST_DIR:-./data/model-comparison}:/data
+      - ./tools/model-comparison:/compare:ro
+    working_dir: /app
+    entrypoint: ["python", "/compare/yolo_infer.py"]

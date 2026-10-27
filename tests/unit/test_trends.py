@@ -109,6 +109,20 @@ def test_directional_flow_split_ignores_tracks_that_never_cross():
     assert split.total == 0
 
 
+def test_directional_flow_split_ignores_crossings_outside_finite_line():
+    line = ((0.25, 0.5), (0.75, 0.5))
+    tracks = [
+        [(1, 0, (0.1, 0.7)), (1, 1, (0.1, 0.3))],
+        [(2, 0, (0.5, 0.7)), (2, 1, (0.5, 0.3))],
+    ]
+
+    split = compute_directional_flow_split(tracks, line)
+
+    assert split.northbound == 1
+    assert split.southbound == 0
+    assert split.total == 1
+
+
 def test_directional_flow_split_counts_track_only_once():
     """A single track that crosses the line multiple times in the same
     direction should be counted at most once per direction.
@@ -162,6 +176,31 @@ def test_congestion_duration_detects_single_blocked_run(tmp_path: Path):
     # 3 consecutive records at 5-min intervals = 10 minutes from first to last
     assert ev.duration == timedelta(minutes=10)
     assert ev.record_count == 3
+
+
+def test_failed_observations_are_excluded_from_trend_history(tmp_path: Path):
+    base = datetime(2026, 6, 23, 9, 0, 0)
+    records = [
+        _make_record("cam1", base + timedelta(minutes=i * 5), "light", 100)
+        for i in range(5)
+    ]
+    failed = _make_record("cam1", base + timedelta(minutes=25), "blocked", 0)
+    failed["health"] = {"overall": "failed", "usable": False}
+    store = _seed_store(tmp_path, "cam1", records + [failed])
+    analyzer = TrendAnalyzer(store)
+    assert analyzer.load_records("cam1")[-1]["label"] == "light"
+
+
+def test_missing_index_record_is_excluded(tmp_path: Path):
+    store = JsonStore(tmp_path)
+    index_path = tmp_path / "analyses" / "cam1" / "index.jsonl"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        '{"record_path":"analyses/cam1/missing.json","captured_at":"2026-06-23T09:00:00Z","density":"blocked"}\n',
+        encoding="utf-8",
+    )
+    analyzer = TrendAnalyzer(store)
+    assert analyzer.load_records("cam1") == []
 
 
 def test_congestion_duration_detects_separate_runs_as_distinct_events(tmp_path: Path):
@@ -257,6 +296,27 @@ def test_incident_detector_emits_flow_drop_event(tmp_path: Path):
     assert ev.severity > 0  # some measure of how anomalous
     assert "flow_total" in ev.details
     assert ev.details["flow_total"] == 20
+
+
+def test_unavailable_burst_crossings_do_not_create_flow_drop(tmp_path: Path):
+    base = datetime(2026, 6, 23, 8, 0, 0)
+    records = _seed_known_baseline(tmp_path, "cam1", 12, base_flow_total=200)
+    unavailable = _make_record(
+        "cam1", base + timedelta(minutes=60), "moderate", flow_total=0
+    )
+    unavailable["details"]["flow_count_per_burst"] = None
+    unavailable["details"]["flow_count_status"] = "unavailable"
+    records.append(unavailable)
+    analyzer = TrendAnalyzer(_seed_store(tmp_path, "cam1", records))
+
+    incidents = analyzer.detect_incidents(
+        "cam1",
+        z_threshold=2.0,
+        window_records=0,
+        hour_buckets=1,
+    )
+
+    assert not [event for event in incidents if event.incident_type == "flow_drop"]
 
 
 def test_incident_detector_emits_density_spike_event(tmp_path: Path):

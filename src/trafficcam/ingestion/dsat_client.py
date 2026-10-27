@@ -246,9 +246,14 @@ def extract_camera_entries(html: str, base_url: str) -> list[CameraEntry]:
 
     def district_for_position(pos: int) -> str | None:
         for start, end, name in tab_intervals:
-            if start <= pos < end:
-                return name or None
-        return None
+            if start <= pos < end and name:
+                return name
+        preceding_headers = [
+            (match.start(), _normalize_district(match.group("district")))
+            for match in DISTRICT_RE.finditer(html)
+            if match.start() <= pos
+        ]
+        return preceding_headers[-1][1] if preceding_headers else None
 
     def sub_district_for_position(pos: int) -> tuple[str | None, str | None]:
         """Return (sub_district_name, district_name) for a camera at `pos`."""

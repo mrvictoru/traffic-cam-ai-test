@@ -75,6 +75,26 @@ def test_baseline_values_caps_same_hour_history_by_window_size():
     assert values == [120, 130]
 
 
+def test_baseline_values_skips_unavailable_measurements():
+    records = [
+        {
+            "captured_at": datetime(2026, 6, 24, 8, 0, 0).isoformat() + "Z",
+            "flow": value,
+        }
+        for value in [10, None, 30]
+    ]
+
+    values = baseline_values(
+        records,
+        3,
+        window_records=0,
+        hour_buckets=1,
+        series_extractor=lambda record: record["flow"],
+    )
+
+    assert values == [10.0, 30.0]
+
+
 def test_zscore_with_window_caps_infinite_spike():
     assert zscore_with_window(20, [10, 10, 10], severity_cap=7.5) == 7.5
     assert zscore_with_window(0, [10, 10, 10], severity_cap=7.5) == -7.5

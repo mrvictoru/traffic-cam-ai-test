@@ -1,0 +1,13 @@
+{
+  "cameras": {
+    "71": {
+      "freeflow_px_per_frame": 8.413,
+      "detector_model": "yolo11s.pt",
+      "sample_count": 23,
+      "sampling_window_local": "12:00-16:00 Asia/Macau",
+      "mean_sample_confidence": 0.399,
+      "mean_eligible_tracks": 6.96,
+      "split_half_p95_ratio": 1.056
+    }
+  }
+}

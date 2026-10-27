@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -40,6 +41,15 @@ class FFmpegRunner:
         When `sample_fps` is set for multi-frame capture, ffmpeg samples frames over
         time instead of grabbing the first adjacent decode frames from the stream.
         """
+        if frame_count <= 0:
+            raise ValueError("frame_count must be greater than zero")
+        if sample_fps is not None and (
+            not math.isfinite(float(sample_fps)) or float(sample_fps) <= 0
+        ):
+            raise ValueError("sample_fps must be finite and greater than zero")
+        if not math.isfinite(float(warmup_seconds)) or float(warmup_seconds) < 0:
+            raise ValueError("warmup_seconds must be finite and non-negative")
+
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 

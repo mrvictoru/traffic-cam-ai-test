@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Iterable, List
 
 from ..models import CameraFeed, CaptureResult
+from ..config import settings
 from .ffmpeg_runner import FFmpegRunner
+from ..ingestion.stream_urls import select_hls_url
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover
+    Image = None
 
 
 class FrameCapturer:
@@ -17,23 +26,62 @@ class FrameCapturer:
     def __init__(self, output_dir: str | Path | None = None, ffmpeg_runner: FFmpegRunner | None = None) -> None:
         self.output_dir = Path(output_dir or "output")
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.ffmpeg_runner = ffmpeg_runner or FFmpegRunner()
+        self.ffmpeg_runner = ffmpeg_runner or FFmpegRunner(settings.ffmpeg_path)
 
     def capture(self, cameras: Iterable[CameraFeed], frame_count: int = 1) -> List[CaptureResult]:
-        """Capture placeholder outputs for each camera."""
-        results: List[CaptureResult] = []
-        for camera in cameras:
-            output_path = self.output_dir / f"{camera.camera_id}_frame.jpg"
-            output_path.write_bytes(b"placeholder")
-            results.append(
-                CaptureResult(
-                    camera_id=camera.camera_id,
-                    output_path=str(output_path),
-                    success=True,
-                    notes="placeholder capture scaffold",
-                )
+        """Reject the legacy object API until it has a real capture contract."""
+        raise NotImplementedError(
+            "FrameCapturer.capture is not supported; use capture_camera or "
+            "capture_frames_from_manifest"
+        )
+
+    @staticmethod
+    def _validate_frame(path: Path) -> tuple[int, int]:
+        if Image is None:
+            raise RuntimeError("Pillow is required to validate captured frames")
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise ValueError(f"captured frame is missing or empty: {path.name}")
+        try:
+            with Image.open(path) as image:
+                image.verify()
+            with Image.open(path) as image:
+                width, height = image.size
+        except (OSError, ValueError, ImportError) as exc:
+            raise ValueError(f"captured frame is not a valid image: {path.name}") from exc
+        if width <= 0 or height <= 0:
+            raise ValueError(f"captured frame has invalid dimensions: {path.name}")
+        return width, height
+
+    @classmethod
+    def _validate_burst(cls, frame_paths: list[Path], frame_count: int) -> tuple[int, int]:
+        if len(frame_paths) != frame_count:
+            raise ValueError(
+                f"expected {frame_count} frames but decoded {len(frame_paths)}"
             )
-        return results
+        dimensions = [cls._validate_frame(path) for path in frame_paths]
+        if len(set(dimensions)) != 1:
+            raise ValueError("captured frames have inconsistent dimensions")
+        return dimensions[0]
+
+    @staticmethod
+    def _base_result(camera: dict, stream_url: str | None, sample_fps: float | None, warmup_seconds: float) -> dict:
+        return {
+            "cam_id": camera.get("cam_id", "unknown"),
+            "name": camera.get("name"),
+            "district": camera.get("district"),
+            "sub_district": camera.get("sub_district"),
+            "stream_url": stream_url,
+            "returncode": None,
+            "frame_paths": [],
+            "stdout": "",
+            "stderr": "",
+            "sample_fps": sample_fps,
+            "warmup_seconds": warmup_seconds,
+            "status": "failed",
+            "health": {"status": "failed", "usable": False},
+            "error": None,
+            "decoded_frame_count": 0,
+        }
 
     def capture_camera(
         self,
@@ -44,80 +92,94 @@ class FrameCapturer:
         warmup_seconds: float = 0.0,
     ) -> dict:
         """Capture frames for a single camera into the configured output directory."""
-        stream_urls = camera.get("stream_urls") or []
-        stream_url = next((url for url in stream_urls if str(url).lower().endswith(".m3u8")), None)
+        if frame_count <= 0:
+            raise ValueError("frame_count must be greater than zero")
+        if burst_fps is not None and (
+            not math.isfinite(float(burst_fps)) or float(burst_fps) <= 0
+        ):
+            raise ValueError("burst_fps must be finite and greater than zero")
+        if not math.isfinite(float(warmup_seconds)) or float(warmup_seconds) < 0:
+            raise ValueError("warmup_seconds must be finite and non-negative")
+
+        stream_url = select_hls_url(camera.get("stream_urls"))
+        sample_fps = burst_fps if frame_count > 1 else None
+        result = self._base_result(camera, stream_url, sample_fps, warmup_seconds)
         if not stream_url:
-            return {
-                "cam_id": camera.get("cam_id", "unknown"),
-                "name": camera.get("name"),
-                "district": camera.get("district"),
-                "sub_district": camera.get("sub_district"),
-                "stream_url": None,
-                "returncode": None,
-                "frame_paths": [],
-                "stdout": "",
-                "stderr": "",
-                "sample_fps": burst_fps,
-                "warmup_seconds": warmup_seconds,
-            }
+            result["status"] = "unsupported"
+            result["error"] = "no supported HLS stream URL"
+            return result
 
         output_root = self.output_dir
         output_root.mkdir(parents=True, exist_ok=True)
         camera_output_dir = output_root / f"cam_{camera['cam_id']}"
         camera_output_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = camera_output_dir / f".capture-{uuid.uuid4().hex}"
+        staging_dir.mkdir(parents=True, exist_ok=False)
+        frame_pattern = staging_dir / "frame_%03d.jpg"
+
+        runner = self.ffmpeg_runner
+        try:
+            if ffmpeg_path is not None:
+                if not ffmpeg_path:
+                    raise ValueError("ffmpeg_path must not be empty")
+                completed = subprocess.run(
+                    [
+                        *ffmpeg_path,
+                        "-y", "-hide_banner", "-loglevel", "error",
+                        *(["-ss", str(warmup_seconds)] if warmup_seconds > 0 else []),
+                        "-i", stream_url,
+                        *(["-vf", f"fps={sample_fps:g}"] if sample_fps is not None else []),
+                        "-frames:v", str(frame_count), str(frame_pattern),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+            else:
+                completed = runner.capture_frames(
+                    stream_url, frame_pattern, frame_count=frame_count,
+                    sample_fps=sample_fps, warmup_seconds=warmup_seconds,
+                )
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
+            result["error"] = str(exc)
+            result["status"] = "failed"
+            for path in staging_dir.glob("*"):
+                if path.is_file():
+                    path.unlink()
+            staging_dir.rmdir()
+            return result
+
+        result.update({
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+        })
+        staged_frames = sorted(staging_dir.glob("frame_*.jpg"))
+        result["decoded_frame_count"] = len(staged_frames)
+        try:
+            if completed.returncode != 0:
+                raise RuntimeError(f"ffmpeg exited with return code {completed.returncode}")
+            self._validate_burst(staged_frames, frame_count)
+        except (OSError, RuntimeError, ValueError) as exc:
+            result["error"] = str(exc)
+            result["status"] = "partial" if staged_frames else "failed"
+            for path in staged_frames:
+                path.unlink(missing_ok=True)
+            staging_dir.rmdir()
+            return result
 
         for existing_frame in camera_output_dir.glob("frame_*.jpg"):
             existing_frame.unlink()
-
-        frame_pattern = camera_output_dir / "frame_%03d.jpg"
-        sample_fps = burst_fps if frame_count > 1 else None
-
-        runner = self.ffmpeg_runner
-        if ffmpeg_path is not None:
-            runner = FFmpegRunner(ffmpeg_path=ffmpeg_path[0])
-        if ffmpeg_path is not None and len(ffmpeg_path) > 1:
-            completed = subprocess.run(
-                [
-                    *ffmpeg_path,
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    *(["-ss", str(warmup_seconds)] if warmup_seconds > 0 else []),
-                    "-i",
-                    stream_url,
-                    *(["-vf", f"fps={sample_fps:g}"] if sample_fps is not None else []),
-                    "-frames:v",
-                    str(frame_count),
-                    str(frame_pattern),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-        else:
-            completed = runner.capture_frames(
-                stream_url,
-                frame_pattern,
-                frame_count=frame_count,
-                sample_fps=sample_fps,
-                warmup_seconds=warmup_seconds,
-            )
-
-        frame_paths = sorted(camera_output_dir.glob("frame_*.jpg"))
-        return {
-            "cam_id": camera["cam_id"],
-            "name": camera.get("name"),
-            "district": camera.get("district"),
-            "sub_district": camera.get("sub_district"),
-            "stream_url": stream_url,
-            "returncode": completed.returncode,
-            "frame_paths": [str(path) for path in frame_paths],
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "sample_fps": sample_fps,
-            "warmup_seconds": warmup_seconds,
-        }
+        published_paths: list[Path] = []
+        for staged_frame in staged_frames:
+            target = camera_output_dir / staged_frame.name
+            staged_frame.replace(target)
+            published_paths.append(target)
+        staging_dir.rmdir()
+        result["frame_paths"] = [str(path) for path in published_paths]
+        result["status"] = "complete"
+        result["health"] = {"status": "ok", "usable": True}
+        return result
 
     def capture_frames_from_manifest(
         self,

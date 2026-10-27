@@ -11,6 +11,7 @@ from macau_dsat_feed import (
     capture_frames_from_manifest,
     extract_camera_entries,
     extract_stream_urls,
+    main,
 )
 
 
@@ -147,6 +148,7 @@ class CaptureFramesTests(unittest.TestCase):
                 textwrap.dedent(
                     """
                     import pathlib
+                    import base64
                     import sys
 
                     args = sys.argv[1:]
@@ -154,9 +156,13 @@ class CaptureFramesTests(unittest.TestCase):
                     pattern = args[-1]
                     output_dir = pathlib.Path(pattern).parent
                     output_dir.mkdir(parents=True, exist_ok=True)
+                    data = base64.b64decode(
+                        " /9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////"
+                        "2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAACD/2gAIAQEAAQUCcf/EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8BP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8BP//EABQQAQAAAAAAAAAAAAAAAAAAACD/2gAIAQEABj8Cf//Z"
+                    )
                     for idx in range(1, frame_count + 1):
                         out_path = output_dir / f"frame_{idx:03d}.jpg"
-                        out_path.write_bytes(b"fake-image")
+                        out_path.write_bytes(data)
                     sys.exit(0)
                     """
                 ).strip()
@@ -173,6 +179,81 @@ class CaptureFramesTests(unittest.TestCase):
             self.assertEqual(2, len(results))
             self.assertTrue((output_root / "cam_49" / "frame_001.jpg").exists())
             self.assertTrue((output_root / "cam_50" / "frame_002.jpg").exists())
+
+
+class LegacyCliMigrationTests(unittest.TestCase):
+    def test_default_invocation_routes_to_discover(self) -> None:
+        from unittest.mock import patch
+
+        with patch("macau_dsat_feed.trafficcam_main", return_value=0) as mocked:
+            result = main([])
+
+        self.assertEqual(0, result)
+        mocked.assert_called_once_with(["discover", "--index-url", "https://www.dsat.gov.mo/dsat/realtime.aspx"])
+
+    def test_capture_frames_routes_to_package_cli(self) -> None:
+        from unittest.mock import patch
+
+        argv = [
+            "--capture-frames",
+            "--index-url",
+            "https://example.test/realtime",
+            "--output-dir",
+            "frames-out",
+            "--frame-count",
+            "4",
+            "--limit",
+            "2",
+            "--pretty",
+        ]
+        with patch("macau_dsat_feed.trafficcam_main", return_value=0) as mocked:
+            result = main(argv)
+
+        self.assertEqual(0, result)
+        mocked.assert_called_once_with(
+            [
+                "capture-frames",
+                "--index-url",
+                "https://example.test/realtime",
+                "--output-dir",
+                "frames-out",
+                "--frame-count",
+                "4",
+                "--limit",
+                "2",
+                "--pretty",
+            ]
+        )
+
+    def test_capture_loop_routes_to_package_cli(self) -> None:
+        from unittest.mock import patch
+
+        argv = [
+            "--capture-loop",
+            "--capture-interval",
+            "7.5",
+            "--max-cycles",
+            "3",
+        ]
+        with patch("macau_dsat_feed.trafficcam_main", return_value=0) as mocked:
+            result = main(argv)
+
+        self.assertEqual(0, result)
+        mocked.assert_called_once_with(
+            [
+                "capture-loop",
+                "--index-url",
+                "https://www.dsat.gov.mo/dsat/realtime.aspx",
+                "--output-dir",
+                "frames",
+                "--frame-count",
+                "3",
+                "--capture-interval",
+                "7.5",
+                "--max-cycles",
+                "3",
+            ]
+        )
 
 
 if __name__ == "__main__":
